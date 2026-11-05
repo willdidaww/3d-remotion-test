@@ -1,0 +1,1967 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Visualisasi 3D Mekanisme Internal Mesin Gerinda Tangan</title>
+
+  <!-- Tailwind CSS via official CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- Three.js ES module importmap. Core and addon versions MUST be identical (0.169.0). -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.169.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.169.0/examples/jsm/"
+    }
+  }
+  </script>
+
+  <style>
+    html, body {
+      margin: 0; padding: 0; height: 100%; overflow: hidden;
+      /* Soft studio backdrop behind the vertical stage on desktop. */
+      background: radial-gradient(circle at 50% 30%, #2a2f36 0%, #15181c 70%, #0d0f12 100%);
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+
+    /* ---------------------------------------------------------------------
+     * VERTICAL 9:16 STAGE (FEAT-003)
+     * Reference size 420 x 746 (9:16). Centered on desktop with rounded
+     * corners + soft shadow. On small screens it scales down to fit the
+     * viewport while preserving the 9:16 aspect ratio. The Three.js canvas,
+     * the label overlay, the clickable UI layer, and the safe-zone guide all
+     * live INSIDE this stage, so the renderer + label projection use the
+     * stage size (not the full window).
+     * ------------------------------------------------------------------- */
+    #stage-wrap {
+      position: fixed; inset: 0; display: flex;
+      align-items: center; justify-content: center;
+    }
+    #stage {
+      position: relative;
+      width: 420px; height: 746px;        /* reference 9:16 */
+      max-width: 100vw;
+      max-height: 100vh;
+      aspect-ratio: 9 / 16;
+      border-radius: 22px;
+      overflow: hidden;
+      background: #F5F3EF;
+      box-shadow: 0 30px 80px rgba(0,0,0,0.55), 0 6px 20px rgba(0,0,0,0.4);
+    }
+    /* Preserve aspect ratio when the viewport is too short for 420x746. */
+    @media (max-height: 780px), (max-width: 440px) {
+      #stage { width: auto; height: 100vh; }
+    }
+    @media (max-width: 440px) {
+      #stage { width: 100vw; height: auto; border-radius: 0; }
+    }
+
+    #scene-canvas { display: block; width: 100%; height: 100%; }
+    #app { position: absolute; inset: 0; }
+
+    /* ---------------------------------------------------------------------
+     * Overlay layer for HTML technical labels + leader lines (FEAT-002).
+     * FEAT-003's "Hide Overlay" will toggle #overlay-layer visibility.
+     * The layer is click-through (pointer-events:none) so OrbitControls keep
+     * receiving pointer input from the canvas underneath. Now scoped to the
+     * stage (absolute inset:0 within #stage).
+     * ------------------------------------------------------------------- */
+    #overlay-layer {
+      position: absolute; inset: 0; pointer-events: none; overflow: hidden; z-index: 10;
+    }
+    #overlay-layer.overlay-hidden { display: none; }
+
+    /* SVG that draws the precise leader lines from badge to component anchor. */
+    #leader-svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+    #leader-svg line {
+      stroke: #f6a623; stroke-width: 1.2; opacity: 0.85;
+    }
+
+    /* ---------------------------------------------------------------------
+     * UI LAYER (FEAT-003). Separate from the labels overlay. Holds all the
+     * clickable storytelling + control UI. pointer-events is NONE on the layer
+     * itself (so empty regions pass pointer input through to OrbitControls on
+     * the canvas), but RE-ENABLED on each interactive panel/button.
+     * "Hide Overlay" toggles .ui-hidden on BOTH #overlay-layer and #ui-layer.
+     * ------------------------------------------------------------------- */
+    #ui-layer {
+      position: absolute; inset: 0; pointer-events: none; z-index: 20;
+      display: flex; flex-direction: column; justify-content: space-between;
+      font-size: 12px; color: #f3efe8;
+    }
+    #ui-layer.ui-hidden { display: none; }
+    #ui-layer .ui-panel { pointer-events: auto; }
+
+    /* Glass / dark semi-transparent panels with backdrop blur. */
+    .glass {
+      background: rgba(16, 18, 22, 0.62);
+      backdrop-filter: blur(9px);
+      -webkit-backdrop-filter: blur(9px);
+      border: 1px solid rgba(255,255,255,0.08);
+    }
+
+    /* Header (top-left). */
+    #header {
+      padding: 14px 16px; max-width: 78%;
+    }
+    #header .subtitle {
+      font-size: 10px; letter-spacing: 0.18em; font-weight: 600;
+      color: #2a2f36; text-transform: uppercase;
+      text-shadow: 0 1px 2px rgba(255,255,255,0.4);
+    }
+    #header .headline {
+      font-family: Georgia, "Times New Roman", serif;
+      font-weight: 800; font-size: 30px; line-height: 1.02;
+      color: #22262b; margin: 4px 0 8px;
+      text-shadow: 0 1px 0 rgba(255,255,255,0.35);
+    }
+    #header .headline .accent { color: #D96B27; }
+    #header .meta { display: flex; align-items: center; gap: 8px; }
+    #header .volt {
+      font-size: 11px; font-weight: 700; letter-spacing: 0.05em;
+      color: #2a2f36; background: rgba(255,255,255,0.55);
+      border-radius: 6px; padding: 2px 8px;
+    }
+    #header .rpm-badge {
+      font-size: 11px; font-weight: 800; letter-spacing: 0.03em;
+      color: #fff; background: #D96B27; border-radius: 999px;
+      padding: 3px 10px; box-shadow: 0 2px 8px rgba(217,107,39,0.5);
+    }
+
+    /* Dynamic explanation panel. */
+    #explain {
+      margin: 0 14px; padding: 12px 14px; border-radius: 14px;
+      color: #f1ece3; line-height: 1.45; font-size: 13px;
+      align-self: flex-start; max-width: calc(100% - 28px);
+    }
+    #explain .stage-tag {
+      display: inline-block; font-size: 10px; letter-spacing: 0.1em;
+      font-weight: 700; color: #ffcf9a; text-transform: uppercase;
+      margin-bottom: 5px;
+    }
+    #explain .hl { color: #D96B27; font-weight: 700; }
+    #explain b { color: #ffe3c6; }
+
+    /* Bottom control panel. */
+    #controls {
+      margin: 0; padding: 10px 12px 12px;
+      border-top: 1px solid rgba(255,255,255,0.08);
+      border-radius: 18px 18px 0 0;
+      display: flex; flex-direction: column; gap: 8px;
+    }
+    .ctl-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .ctl-btn {
+      pointer-events: auto; cursor: pointer; user-select: none;
+      background: rgba(255,255,255,0.10); color: #f3efe8;
+      border: 1px solid rgba(255,255,255,0.14); border-radius: 8px;
+      padding: 6px 10px; font-size: 11px; font-weight: 600;
+      transition: background 0.15s, border-color 0.15s, color 0.15s;
+      white-space: nowrap;
+    }
+    .ctl-btn:hover { background: rgba(255,255,255,0.18); }
+    .ctl-btn.active {
+      background: #D96B27; border-color: #D96B27; color: #fff;
+    }
+    .ctl-btn.wide { flex: 1; text-align: center; }
+    .ctl-icon { font-size: 13px; }
+
+    .progress-wrap { flex: 1; min-width: 120px; }
+    .progress-label { font-size: 10px; color: #cdc6ba; margin-bottom: 3px; letter-spacing: 0.04em; }
+    .progress-track {
+      height: 6px; border-radius: 999px; background: rgba(255,255,255,0.14);
+      overflow: hidden;
+    }
+    .progress-fill {
+      height: 100%; width: 10%; border-radius: 999px;
+      background: linear-gradient(90deg, #f6a623, #D96B27);
+      transition: width 0.35s ease;
+    }
+
+    /* RPM slider. */
+    .rpm-block { width: 100%; }
+    .rpm-top { display: flex; justify-content: space-between; align-items: baseline; }
+    .rpm-top .label { font-size: 10px; letter-spacing: 0.06em; color: #cdc6ba; }
+    .rpm-top .value { font-size: 12px; font-weight: 800; color: #ffcf9a; }
+    input[type="range"].rpm-slider {
+      -webkit-appearance: none; appearance: none; width: 100%; height: 5px;
+      border-radius: 999px; background: rgba(255,255,255,0.18);
+      outline: none; margin: 6px 0 0; pointer-events: auto; cursor: pointer;
+    }
+    input[type="range"].rpm-slider::-webkit-slider-thumb {
+      -webkit-appearance: none; appearance: none; width: 15px; height: 15px;
+      border-radius: 50%; background: #D96B27; border: 2px solid #fff;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.5);
+    }
+    input[type="range"].rpm-slider::-moz-range-thumb {
+      width: 15px; height: 15px; border-radius: 50%; background: #D96B27;
+      border: 2px solid #fff;
+    }
+    .rpm-ticks { display: flex; justify-content: space-between; margin-top: 2px; }
+    .rpm-ticks span { font-size: 8px; color: #8a8378; }
+
+    /* Collapsible advanced control groups (camera / visibility / cutaway). */
+    details.ctl-group {
+      pointer-events: auto; border-radius: 8px;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.08);
+    }
+    details.ctl-group > summary {
+      cursor: pointer; list-style: none; padding: 6px 10px;
+      font-size: 10px; font-weight: 700; letter-spacing: 0.08em;
+      text-transform: uppercase; color: #cdc6ba;
+    }
+    details.ctl-group > summary::-webkit-details-marker { display: none; }
+    details.ctl-group[open] > summary { color: #ffcf9a; }
+    .group-body { padding: 4px 8px 8px; display: flex; flex-wrap: wrap; gap: 5px; }
+    .mini-btn {
+      pointer-events: auto; cursor: pointer; user-select: none;
+      background: rgba(255,255,255,0.08); color: #e8e2d8;
+      border: 1px solid rgba(255,255,255,0.12); border-radius: 6px;
+      padding: 4px 7px; font-size: 10px; font-weight: 600;
+    }
+    .mini-btn:hover { background: rgba(255,255,255,0.16); }
+    .mini-btn.active { background: #D96B27; border-color: #D96B27; color: #fff; }
+    .mini-btn.on { background: rgba(217,107,39,0.35); border-color: #D96B27; color: #ffdfc4; }
+
+    /* Safe-zone guide: 100px inset boundary on all four sides. */
+    #safe-zone {
+      position: absolute; inset: 100px; z-index: 15; pointer-events: none;
+      border: 1.5px dashed rgba(217,107,39,0.85);
+      border-radius: 4px; display: none;
+    }
+    #safe-zone.visible { display: block; }
+    #safe-zone::after {
+      content: "SAFE ZONE 100px";
+      position: absolute; top: 4px; left: 6px;
+      font-size: 9px; letter-spacing: 0.1em; font-weight: 700;
+      color: rgba(217,107,39,0.95); font-family: monospace;
+    }
+
+    /* Always-reachable restore affordance shown while the UI is hidden. */
+    #restore-ui {
+      position: absolute; top: 8px; right: 8px; z-index: 40;
+      display: none; pointer-events: auto; cursor: pointer;
+      background: rgba(16,18,22,0.7); color: #ffcf9a;
+      border: 1px solid #D96B27; border-radius: 999px;
+      padding: 5px 10px; font-size: 10px; font-weight: 700;
+      backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+    }
+    #restore-ui.visible { display: block; }
+
+    /* Floating technical badges: monospace, dark transparent bg, thin
+       yellow/orange border. Positioned absolutely each frame via JS. */
+    .tech-label {
+      position: absolute;
+      transform: translate(-50%, -50%);
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      font-size: 10px;
+      letter-spacing: 0.06em;
+      line-height: 1.1;
+      color: #ffe9c7;
+      background: rgba(12, 14, 18, 0.72);
+      border: 1px solid #f6a623;
+      border-radius: 4px;
+      padding: 3px 7px;
+      white-space: nowrap;
+      text-shadow: 0 1px 2px rgba(0,0,0,0.8);
+      box-shadow: 0 0 8px rgba(246, 166, 35, 0.25);
+      will-change: left, top;
+    }
+    .tech-label .lbl-dot {
+      display: inline-block;
+      width: 5px; height: 5px;
+      margin-right: 5px;
+      border-radius: 50%;
+      background: #ffb23e;
+      box-shadow: 0 0 5px #ffb23e;
+      vertical-align: middle;
+    }
+    .tech-label.label-hidden { display: none; }
+  </style>
+</head>
+<body>
+  <!-- Vertical 9:16 stage. Everything (canvas, labels, UI, safe-zone) lives inside. -->
+  <div id="stage-wrap">
+    <div id="stage">
+      <div id="app">
+        <canvas id="scene-canvas"></canvas>
+      </div>
+
+      <!-- Overlay layer for technical labels + leader lines (FEAT-002).
+           FEAT-003 toggles this with #ui-layer via "Hide Overlay". -->
+      <div id="overlay-layer">
+        <svg id="leader-svg" xmlns="http://www.w3.org/2000/svg"></svg>
+      </div>
+
+      <!-- Safe-zone guide: 100px inset boundary (Reels/Shorts/TikTok). -->
+      <div id="safe-zone"></div>
+
+      <!-- Always-reachable restore affordance while the UI is hidden. -->
+      <button id="restore-ui" type="button" title="Tampilkan UI">&#9680; Tampilkan UI</button>
+
+      <!-- Clickable storytelling + control UI (FEAT-003). -->
+      <div id="ui-layer">
+
+        <!-- HEADER (top-left) -->
+        <div id="header" class="ui-panel">
+          <div class="subtitle">DALAM BODI — MOTOR UNIVERSAL</div>
+          <div class="headline">listrik jadi<br><span class="accent">putaran</span></div>
+          <div class="meta">
+            <span class="volt">220V AC</span>
+            <span class="rpm-badge">~11.000 RPM</span>
+          </div>
+        </div>
+
+        <!-- DYNAMIC EXPLANATION PANEL -->
+        <div id="explain" class="glass ui-panel">
+          <span class="stage-tag" id="explain-tag">Tahap 1/10</span>
+          <div id="explain-text">&nbsp;</div>
+        </div>
+
+        <!-- BOTTOM CONTROL PANEL -->
+        <div id="controls" class="glass ui-panel">
+
+          <!-- Playback transport + progress -->
+          <div class="ctl-row">
+            <button class="ctl-btn" id="btn-restart" type="button" title="Mulai ulang"><span class="ctl-icon">&#8635;</span></button>
+            <button class="ctl-btn" id="btn-prev" type="button" title="Tahap sebelumnya">&#9664;</button>
+            <button class="ctl-btn" id="btn-play" type="button" title="Play / Pause"><span class="ctl-icon">&#9654;</span> Play</button>
+            <button class="ctl-btn" id="btn-next" type="button" title="Tahap berikutnya">&#9654;</button>
+            <button class="ctl-btn" id="btn-speed" type="button" title="Slow Motion / Normal Speed">Slow Motion</button>
+          </div>
+
+          <!-- Animation progress -->
+          <div class="ctl-row">
+            <div class="progress-wrap">
+              <div class="progress-label" id="progress-label">Tahap 1/10 &mdash; Mesin utuh</div>
+              <div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
+            </div>
+          </div>
+
+          <!-- RPM slider with discrete stops + live readout -->
+          <div class="rpm-block">
+            <div class="rpm-top">
+              <span class="label">RPM</span>
+              <span class="value" id="rpm-value">0 RPM</span>
+            </div>
+            <input type="range" class="rpm-slider" id="rpm-slider" min="0" max="5" step="1" value="0" />
+            <div class="rpm-ticks">
+              <span>0</span><span>2k</span><span>4k</span><span>6k</span><span>8k</span><span>11k</span>
+            </div>
+          </div>
+
+          <!-- Camera controls -->
+          <details class="ctl-group">
+            <summary>Kamera</summary>
+            <div class="group-body">
+              <button class="mini-btn" id="btn-reset-cam" type="button">Reset Camera</button>
+              <button class="mini-btn" id="btn-autorotate" type="button">Auto Rotate</button>
+            </div>
+          </details>
+
+          <!-- Cutaway modes (exactly four) -->
+          <details class="ctl-group">
+            <summary>Cutaway</summary>
+            <div class="group-body" id="cutaway-group"></div>
+          </details>
+
+          <!-- Component visibility (nine toggles) -->
+          <details class="ctl-group">
+            <summary>Visibilitas Komponen</summary>
+            <div class="group-body" id="visibility-group"></div>
+          </details>
+
+          <!-- Composition helpers -->
+          <div class="ctl-row">
+            <button class="ctl-btn wide" id="btn-safezone" type="button">Safe Zone</button>
+            <button class="ctl-btn wide" id="btn-hide-overlay" type="button">Hide Overlay</button>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+  /* =============================================================================
+   * DEV NOTE — Central objects & hook points for later features (FEAT-002/FEAT-003)
+   * -----------------------------------------------------------------------------
+   * This module builds the FOUNDATION only: scene, renderer, lighting, camera +
+   * OrbitControls, and all eight procedurally-built mechanical component groups
+   * assembled with the correct parent-child transform hierarchy.
+   *
+   * Central objects exported onto `window.APP` so later features hook in cleanly:
+   *   APP.scene            : THREE.Scene
+   *   APP.camera           : THREE.PerspectiveCamera (3/4 isometric-ish framing)
+   *   APP.renderer         : THREE.WebGLRenderer (ACES + sRGB + PCFSoftShadowMap)
+   *   APP.controls         : OrbitControls (damping, pan, zoom, autoRotate wiring)
+   *   APP.components        : Map<string, THREE.Group>  central component registry
+   *   APP.rotorGroup       : spins on the MOTOR axis (armature+commutator+fan+pinion)
+   *   APP.statorGroup      : FIXED (stator pole pieces + carbon brushes) — no spin
+   *   APP.spindleGroup     : spins on the PERPENDICULAR output axis (crown+spindle+disc)
+   *   APP.homeTransforms   : Map<string,{position,quaternion,scale}> neutral/home
+   *                          transforms for every registered component. Used by the
+   *                          later Exploded View (FEAT-002) to offset along an
+   *                          assembly axis and restore. Each group ALSO carries its
+   *                          own home transform in userData.home for convenience.
+   *   APP.initialCamera    : { position:Vector3, target:Vector3 } for Reset Camera.
+   *   APP.materials        : shared MeshStandardMaterial registry.
+   *
+   * Transform / motion grouping (the highest-risk part — see FEAT-001):
+   *   - rotorGroup rotates about its local Z (the motor shaft runs along world X,
+   *     rotorGroup is oriented so its local Z == motor axis). Spin wiring is added
+   *     in FEAT-002 (RPM slider); FEAT-001 only establishes the pivots.
+   *   - statorGroup never rotates; it surrounds the rotor and holds the brushes.
+   *   - spindleGroup sits at the gearbox head on a PERPENDICULAR axis (world Y).
+   *     The pinion (child of rotorGroup) meets the crown bevel gear (child of
+   *     spindleGroup) at the gearbox head, transferring motion and changing the
+   *     rotation axis from the motor axis to the spindle axis.
+   *
+   * NOT implemented here (later features): RPM control, cutaway/transparency,
+   * exploded animation, electrical-flow / magnetic-field FX, HTML labels,
+   * particles, the vertical 9:16 UI, and the 10-stage state machine.
+   * ========================================================================== */
+
+  import * as THREE from 'three';
+  import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+  // ---------------------------------------------------------------------------
+  // Central registries exposed for later features.
+  // ---------------------------------------------------------------------------
+  const components = new Map();      // name -> THREE.Group
+  const homeTransforms = new Map();  // name -> { position, quaternion, scale }
+  const materials = {};              // shared MeshStandardMaterial registry
+
+  // ---------------------------------------------------------------------------
+  // Renderer: antialiased, ACES tone mapping, sRGB output, soft shadows.
+  // ---------------------------------------------------------------------------
+  const canvas = document.getElementById('scene-canvas');
+  // The renderer fills the vertical 9:16 stage, NOT the whole window. All sizing
+  // reads the stage element's client box so canvas, camera and label projection
+  // stay in sync (see onResize + updateLabels).
+  const stageEl = document.getElementById('stage');
+  function stageSize() {
+    const r = stageEl.getBoundingClientRect();
+    return { w: Math.max(1, Math.round(r.width)), h: Math.max(1, Math.round(r.height)) };
+  }
+  const _stage0 = stageSize();
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(_stage0.w, _stage0.h);
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.05;
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+  // ---------------------------------------------------------------------------
+  // Scene with warm cream background.
+  // ---------------------------------------------------------------------------
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color('#F5F3EF');
+
+  // ---------------------------------------------------------------------------
+  // Camera at a 3/4 isometric-ish angle.
+  // ---------------------------------------------------------------------------
+  const camera = new THREE.PerspectiveCamera(42, _stage0.w / _stage0.h, 0.1, 100);
+  const INITIAL_CAMERA_POSITION = new THREE.Vector3(7.5, 5.2, 8.5);
+  const INITIAL_CAMERA_TARGET = new THREE.Vector3(0, 0.2, 0);
+  camera.position.copy(INITIAL_CAMERA_POSITION);
+  camera.lookAt(INITIAL_CAMERA_TARGET);
+
+  // ---------------------------------------------------------------------------
+  // OrbitControls: damping, pan, zoom. Store initial state for a later Reset.
+  // autoRotate is wired here but left off; FEAT-002 adds the toggle.
+  // ---------------------------------------------------------------------------
+  const controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
+  controls.enablePan = true;
+  controls.enableZoom = true;
+  controls.minDistance = 3;
+  controls.maxDistance = 30;
+  controls.autoRotate = false;
+  controls.autoRotateSpeed = 1.0;
+  controls.target.copy(INITIAL_CAMERA_TARGET);
+  controls.update();
+
+  const initialCamera = {
+    position: INITIAL_CAMERA_POSITION.clone(),
+    target: INITIAL_CAMERA_TARGET.clone()
+  };
+
+  // ---------------------------------------------------------------------------
+  // Studio lighting: hemisphere/ambient fill, soft key directional with shadows,
+  // and two rim/fill lights. Plus a shadow-catching ground in the cream tone.
+  // ---------------------------------------------------------------------------
+  const hemiLight = new THREE.HemisphereLight(0xffffff, 0xcdc6ba, 0.55);
+  scene.add(hemiLight);
+
+  const ambient = new THREE.AmbientLight(0xffffff, 0.25);
+  scene.add(ambient);
+
+  const keyLight = new THREE.DirectionalLight(0xffffff, 2.2);
+  keyLight.position.set(6, 10, 6);
+  keyLight.castShadow = true;
+  keyLight.shadow.mapSize.set(2048, 2048);
+  keyLight.shadow.camera.near = 0.5;
+  keyLight.shadow.camera.far = 40;
+  keyLight.shadow.camera.left = -12;
+  keyLight.shadow.camera.right = 12;
+  keyLight.shadow.camera.top = 12;
+  keyLight.shadow.camera.bottom = -12;
+  keyLight.shadow.bias = -0.0004;
+  keyLight.shadow.normalBias = 0.02;
+  keyLight.shadow.radius = 4;
+  scene.add(keyLight);
+
+  const rimLight = new THREE.DirectionalLight(0xfff0e0, 0.8);
+  rimLight.position.set(-8, 6, -6);
+  scene.add(rimLight);
+
+  const fillLight = new THREE.DirectionalLight(0xdfe6ff, 0.5);
+  fillLight.position.set(-4, 3, 8);
+  scene.add(fillLight);
+
+  // Shadow-catching ground plane in cream tone.
+  const groundMat = new THREE.MeshStandardMaterial({ color: 0xece8e0, roughness: 0.95, metalness: 0.0 });
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(60, 60), groundMat);
+  ground.rotation.x = -Math.PI / 2;
+  ground.position.y = -2.4;
+  ground.receiveShadow = true;
+  scene.add(ground);
+
+  // ---------------------------------------------------------------------------
+  // Shared materials (MeshStandardMaterial with metalness/roughness).
+  // Housing is transparency-capable so FEAT-002 cutaway can fade it.
+  // ---------------------------------------------------------------------------
+  materials.housing = new THREE.MeshStandardMaterial({
+    color: 0x3a3f45, metalness: 0.35, roughness: 0.55, transparent: true, opacity: 1.0
+  });
+  materials.housingAccent = new THREE.MeshStandardMaterial({
+    color: 0x24282c, metalness: 0.4, roughness: 0.5, transparent: true, opacity: 1.0
+  });
+  materials.steel = new THREE.MeshStandardMaterial({ color: 0xbfc4ca, metalness: 0.95, roughness: 0.3 });
+  materials.ironLam = new THREE.MeshStandardMaterial({ color: 0x4a4d52, metalness: 0.8, roughness: 0.55 });
+  materials.copper = new THREE.MeshStandardMaterial({ color: 0xD96B27, metalness: 0.85, roughness: 0.35, emissive: 0x160800, emissiveIntensity: 0.0 });
+  materials.copperBright = new THREE.MeshStandardMaterial({ color: 0xe8853f, metalness: 0.9, roughness: 0.3 });
+  materials.carbon = new THREE.MeshStandardMaterial({ color: 0x15171a, metalness: 0.1, roughness: 0.9 });
+  materials.brassHolder = new THREE.MeshStandardMaterial({ color: 0xb08d57, metalness: 0.85, roughness: 0.4 });
+  materials.spring = new THREE.MeshStandardMaterial({ color: 0x9aa0a6, metalness: 0.9, roughness: 0.35 });
+  materials.magnetBlue = new THREE.MeshStandardMaterial({ color: 0x2f6bbf, metalness: 0.5, roughness: 0.5 });
+  materials.gear = new THREE.MeshStandardMaterial({ color: 0x8d9298, metalness: 0.9, roughness: 0.35 });
+  materials.insulator = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, metalness: 0.0, roughness: 0.8 });
+  materials.disc = new THREE.MeshStandardMaterial({ color: 0x6e6256, metalness: 0.2, roughness: 0.85 });
+  materials.flange = new THREE.MeshStandardMaterial({ color: 0xcfd3d8, metalness: 0.9, roughness: 0.3 });
+
+  // ---------------------------------------------------------------------------
+  // Helper: register a top-level component group, give it a stable name, enable
+  // shadows on all meshes, capture its home transform, and store references.
+  // ---------------------------------------------------------------------------
+  function registerComponent(name, group) {
+    group.name = name;
+    group.userData.name = name;
+    group.traverse((obj) => {
+      if (obj.isMesh) { obj.castShadow = true; obj.receiveShadow = true; }
+    });
+    const home = {
+      position: group.position.clone(),
+      quaternion: group.quaternion.clone(),
+      scale: group.scale.clone()
+    };
+    group.userData.home = home;
+    homeTransforms.set(name, home);
+    components.set(name, group);
+    return group;
+  }
+
+  // Small helper to build a cylindrical set of teeth around a radius (stylised gear).
+  function addGearTeeth(parent, count, radius, toothW, toothH, toothD, mat, axis = 'z') {
+    for (let i = 0; i < count; i++) {
+      const a = (i / count) * Math.PI * 2;
+      const tooth = new THREE.Mesh(new THREE.BoxGeometry(toothW, toothH, toothD), mat);
+      if (axis === 'z') {
+        tooth.position.set(Math.cos(a) * radius, Math.sin(a) * radius, 0);
+        tooth.rotation.z = a;
+      } else { // 'y' axis gear (teeth around horizontal ring)
+        tooth.position.set(Math.cos(a) * radius, 0, Math.sin(a) * radius);
+        tooth.rotation.y = -a;
+      }
+      parent.add(tooth);
+    }
+  }
+
+  // ===========================================================================
+  // GEOMETRY CONVENTION
+  //   Motor axis runs along local Z of rotorGroup.
+  //   The rotor cylinders are built along Z (rotated so their length is on Z).
+  //   spindleGroup output axis is world Y (perpendicular), at the gearbox head.
+  // ===========================================================================
+
+  // --- (A) Outer Housing / Body -------------------------------------------------
+  function buildHousing() {
+    const g = new THREE.Group();
+
+    // Main motor barrel (cutaway-capable, semi-transparent housing material).
+    const barrel = new THREE.Mesh(new THREE.CylinderGeometry(1.15, 1.15, 4.2, 48, 1, true), materials.housing);
+    barrel.rotation.z = Math.PI / 2; // lie along X (world) for the body silhouette
+    barrel.position.set(0, 0, 0);
+    g.add(barrel);
+
+    // Rear cap.
+    const rearCap = new THREE.Mesh(new THREE.SphereGeometry(1.15, 32, 16, 0, Math.PI * 2, 0, Math.PI / 2), materials.housingAccent);
+    rearCap.rotation.z = -Math.PI / 2;
+    rearCap.position.set(-2.1, 0, 0);
+    g.add(rearCap);
+
+    // Ventilation slots near the rear.
+    for (let i = 0; i < 10; i++) {
+      const a = (i / 10) * Math.PI * 2;
+      const vent = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.06, 0.18), materials.housingAccent);
+      vent.position.set(-1.5, Math.sin(a) * 1.16, Math.cos(a) * 1.16);
+      vent.rotation.x = -a;
+      g.add(vent);
+    }
+
+    // Gearbox head (at +X, stepping up toward the spindle on +Y).
+    const head = new THREE.Mesh(new THREE.CylinderGeometry(1.0, 1.1, 1.3, 36), materials.housing);
+    head.position.set(2.3, 0.1, 0);
+    g.add(head);
+    const headTop = new THREE.Mesh(new THREE.CylinderGeometry(0.75, 0.9, 0.8, 36), materials.housingAccent);
+    headTop.position.set(2.3, 0.95, 0);
+    g.add(headTop);
+
+    // Rear handle.
+    const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.55, 1.6, 24), materials.housingAccent);
+    handle.rotation.z = Math.PI / 2;
+    handle.position.set(-2.9, 0, 0);
+    g.add(handle);
+
+    // Power cable (tube curve) trailing from the rear.
+    const cablePath = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(-3.7, 0, 0),
+      new THREE.Vector3(-4.6, -0.4, 0.2),
+      new THREE.Vector3(-5.2, -1.2, 0.1),
+      new THREE.Vector3(-5.6, -2.2, 0.0)
+    ]);
+    const cable = new THREE.Mesh(new THREE.TubeGeometry(cablePath, 32, 0.14, 12, false), materials.carbon);
+    g.add(cable);
+
+    return g;
+  }
+
+  // --- (B) Armature / Rotor (child of rotorGroup) -------------------------------
+  // Built along local Z (motor axis). Returns a group to parent under rotorGroup.
+  function buildArmature() {
+    const g = new THREE.Group();
+
+    // Central steel shaft (long, along Z).
+    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 4.6, 24), materials.steel);
+    shaft.rotation.x = Math.PI / 2;
+    g.add(shaft);
+
+    // Laminated iron core (stack of thin discs).
+    const coreLen = 1.6;
+    const lamCount = 16;
+    for (let i = 0; i < lamCount; i++) {
+      const z = -coreLen / 2 + (i / (lamCount - 1)) * coreLen;
+      const lam = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.42, coreLen / lamCount * 0.75, 24), materials.ironLam);
+      lam.rotation.x = Math.PI / 2;
+      lam.position.z = z;
+      g.add(lam);
+    }
+
+    // Copper windings around the poles (symmetric).
+    const poles = 8;
+    for (let i = 0; i < poles; i++) {
+      const a = (i / poles) * Math.PI * 2;
+      const coil = new THREE.Mesh(new THREE.TorusGeometry(0.3, 0.1, 10, 20, Math.PI), materials.copper);
+      coil.position.set(Math.cos(a) * 0.34, Math.sin(a) * 0.34, 0);
+      coil.rotation.z = a;
+      coil.rotation.y = Math.PI / 2;
+      g.add(coil);
+      // Axial winding bars running along the core.
+      const bar = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, coreLen + 0.1, 8), materials.copper);
+      bar.rotation.x = Math.PI / 2;
+      bar.position.set(Math.cos(a) * 0.44, Math.sin(a) * 0.44, 0);
+      g.add(bar);
+    }
+
+    return g;
+  }
+
+  // --- (C) Commutator (child of rotorGroup) -------------------------------------
+  function buildCommutator() {
+    const g = new THREE.Group();
+    const segCount = 12;
+    const radius = 0.26;
+    for (let i = 0; i < segCount; i++) {
+      const a = (i / segCount) * Math.PI * 2;
+      const seg = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.5, 0.06), materials.copperBright);
+      seg.position.set(Math.cos(a) * radius, Math.sin(a) * radius, 0);
+      seg.rotation.z = a + Math.PI / 2;
+      g.add(seg);
+      // Insulator gaps between segments.
+      const gap = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.52, 0.065), materials.insulator);
+      const ga = a + (Math.PI / segCount);
+      gap.position.set(Math.cos(ga) * radius, Math.sin(ga) * radius, 0);
+      gap.rotation.z = ga + Math.PI / 2;
+      g.add(gap);
+    }
+    // Hub.
+    const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.52, 20), materials.insulator);
+    hub.rotation.x = Math.PI / 2;
+    g.add(hub);
+    return g;
+  }
+
+  // --- (F) Cooling Fan (child of rotorGroup) ------------------------------------
+  function buildCoolingFan() {
+    const g = new THREE.Group();
+    const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.18, 20), materials.housingAccent);
+    hub.rotation.x = Math.PI / 2;
+    g.add(hub);
+    const blades = 9;
+    for (let i = 0; i < blades; i++) {
+      const a = (i / blades) * Math.PI * 2;
+      const blade = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.36, 0.03), materials.steel);
+      blade.position.set(Math.cos(a) * 0.45, Math.sin(a) * 0.45, 0);
+      blade.rotation.z = a;
+      blade.rotation.x = 0.4; // pitch for airflow
+      g.add(blade);
+    }
+    return g;
+  }
+
+  // --- (G1) Pinion gear (child of rotorGroup, at the gearbox head on motor axis) -
+  function buildPinion() {
+    const g = new THREE.Group();
+    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.28, 0.4, 24), materials.gear);
+    body.rotation.x = Math.PI / 2; // aligned along Z (motor axis)
+    g.add(body);
+    addGearTeeth(g, 12, 0.3, 0.07, 0.12, 0.38, materials.gear, 'z');
+    return g;
+  }
+
+  // --- (E) Stator (child of statorGroup, fixed) ---------------------------------
+  function buildStator() {
+    const g = new THREE.Group();
+    // Two iron pole pieces top/bottom surrounding the armature.
+    for (const sign of [1, -1]) {
+      const pole = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.5, 0.9), materials.ironLam);
+      pole.position.set(0, sign * 0.78, 0);
+      g.add(pole);
+      // Pole shoe (curved inner face) approximated with a partial cylinder.
+      const shoe = new THREE.Mesh(new THREE.CylinderGeometry(0.62, 0.62, 1.5, 24, 1, true, -0.6, 1.2), materials.ironLam);
+      shoe.rotation.z = Math.PI / 2;
+      shoe.rotation.x = sign > 0 ? 0 : Math.PI;
+      g.add(shoe);
+      // Field windings on each pole.
+      for (let k = -1; k <= 1; k += 2) {
+        const w = new THREE.Mesh(new THREE.TorusGeometry(0.33, 0.1, 10, 20), materials.copper);
+        w.position.set(k * 0.5, sign * 0.78, 0);
+        w.rotation.y = Math.PI / 2;
+        g.add(w);
+      }
+    }
+    return g;
+  }
+
+  // --- (D) Carbon Brushes (child of statorGroup, fixed) -------------------------
+  // Two brushes left/right of the commutator, each with holder + spring.
+  function buildBrushes(commutatorZ) {
+    const g = new THREE.Group();
+    for (const sign of [1, -1]) {
+      const assembly = new THREE.Group();
+      const yOff = sign * 0.42;
+      // Carbon block.
+      const block = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.26, 0.16), materials.carbon);
+      block.position.set(0, yOff, commutatorZ);
+      assembly.add(block);
+      // Metal holder around it.
+      const holder = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.3, 0.22), materials.brassHolder);
+      holder.position.set(0, yOff + sign * 0.18, commutatorZ);
+      assembly.add(holder);
+      // Pressure spring (small coil approximated by a short torus stack).
+      const spring = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.18, 12), materials.spring);
+      spring.position.set(0, yOff + sign * 0.36, commutatorZ);
+      assembly.add(spring);
+      g.add(assembly);
+    }
+    return g;
+  }
+
+  // --- (G2) Crown bevel gear (child of spindleGroup, perpendicular axis) --------
+  function buildCrownGear() {
+    const g = new THREE.Group();
+    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.7, 0.7, 0.22, 36), materials.gear);
+    g.add(body); // already along Y (spindle axis)
+    // Bevel teeth around the rim, tilted toward the pinion.
+    const count = 28;
+    for (let i = 0; i < count; i++) {
+      const a = (i / count) * Math.PI * 2;
+      const tooth = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.16, 0.12), materials.gear);
+      tooth.position.set(Math.cos(a) * 0.7, 0.02, Math.sin(a) * 0.7);
+      tooth.rotation.y = -a;
+      tooth.rotation.x = 0.35;
+      g.add(tooth);
+    }
+    return g;
+  }
+
+  // --- (H) Spindle + flange + lock nut + grinding disc (child of spindleGroup) ---
+  function buildSpindleAssembly() {
+    const g = new THREE.Group();
+    // Spindle shaft along Y, pointing down out of the gearbox.
+    const spindle = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.13, 1.4, 20), materials.steel);
+    spindle.position.set(0, -0.7, 0);
+    g.add(spindle);
+    // Inner flange.
+    const flangeInner = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.35, 0.08, 28), materials.flange);
+    flangeInner.position.set(0, -1.25, 0);
+    g.add(flangeInner);
+    // Grinding disc.
+    const disc = new THREE.Mesh(new THREE.CylinderGeometry(1.25, 1.25, 0.06, 48), materials.disc);
+    disc.position.set(0, -1.33, 0);
+    g.add(disc);
+    // Outer flange / clamp.
+    const flangeOuter = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 0.06, 28), materials.flange);
+    flangeOuter.position.set(0, -1.4, 0);
+    g.add(flangeOuter);
+    // Lock nut.
+    const nut = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.12, 6), materials.flange);
+    nut.position.set(0, -1.48, 0);
+    g.add(nut);
+    return g;
+  }
+
+  // ===========================================================================
+  // ASSEMBLY — build groups and wire the transform hierarchy.
+  // ===========================================================================
+
+  // root group so FEAT-002 can offset/explode everything relative to one origin.
+  const machineRoot = new THREE.Group();
+  machineRoot.name = 'machineRoot';
+  scene.add(machineRoot);
+
+  // --- Housing (static, parented to root) ---
+  const housingGroup = buildHousing();
+  machineRoot.add(housingGroup);
+  registerComponent('housing', housingGroup);
+
+  // --- rotorGroup: spins on the MOTOR axis (local Z). Positioned along the body.
+  const rotorGroup = new THREE.Group();
+  rotorGroup.position.set(-0.4, 0, 0);
+  rotorGroup.rotation.y = Math.PI / 2; // orient local Z -> world X (motor runs along X)
+  machineRoot.add(rotorGroup);
+
+  const armature = buildArmature();
+  armature.position.set(0, 0, 0);
+  rotorGroup.add(armature);
+  registerComponent('armature', armature);
+
+  const commutator = buildCommutator();
+  const COMMUTATOR_Z = -1.3; // toward the rear of the rotor
+  commutator.position.set(0, 0, COMMUTATOR_Z);
+  rotorGroup.add(commutator);
+  registerComponent('commutator', commutator);
+
+  const coolingFan = buildCoolingFan();
+  coolingFan.position.set(0, 0, -1.9); // behind the core near the rear
+  rotorGroup.add(coolingFan);
+  registerComponent('coolingFan', coolingFan);
+
+  const pinion = buildPinion();
+  pinion.position.set(0, 0, 2.3); // front toward the gearbox head
+  rotorGroup.add(pinion);
+  registerComponent('pinion', pinion);
+
+  registerComponent('rotorGroup', rotorGroup);
+
+  // --- statorGroup: FIXED. Holds stator pole pieces + carbon brushes.
+  const statorGroup = new THREE.Group();
+  statorGroup.position.set(-0.4, 0, 0);
+  statorGroup.rotation.y = Math.PI / 2; // same orientation as rotor (local Z == motor axis)
+  machineRoot.add(statorGroup);
+
+  const stator = buildStator();
+  statorGroup.add(stator);
+  registerComponent('stator', stator);
+
+  const brushes = buildBrushes(COMMUTATOR_Z);
+  statorGroup.add(brushes);
+  registerComponent('carbonBrushes', brushes);
+
+  registerComponent('statorGroup', statorGroup);
+
+  // --- spindleGroup: spins on the PERPENDICULAR output axis (world Y) at the head.
+  const spindleGroup = new THREE.Group();
+  spindleGroup.position.set(2.3, 0.1, 0); // at the gearbox head
+  machineRoot.add(spindleGroup);
+
+  const crownGear = buildCrownGear();
+  crownGear.position.set(0, 0.55, 0); // up top where it meets the pinion
+  spindleGroup.add(crownGear);
+  registerComponent('crownGear', crownGear);
+
+  const spindleAssembly = buildSpindleAssembly();
+  spindleGroup.add(spindleAssembly);
+  registerComponent('spindleAssembly', spindleAssembly);
+
+  registerComponent('spindleGroup', spindleGroup);
+
+  // Capture the machineRoot home transform too (useful for a global reset).
+  registerComponent('machineRoot', machineRoot);
+
+  // ===========================================================================
+  // FEAT-002 — INTERACTIVITY LAYER
+  // ---------------------------------------------------------------------------
+  // Added on top of the FEAT-001 foundation:
+  //   - RPM stepped speed model -> rotorGroup + bevel-coupled spindleGroup
+  //   - global playback-speed multiplier (slow-motion hook for FEAT-003)
+  //   - Reset Camera + Auto Rotate toggle
+  //   - setComponentVisible(name, bool) for the nine user-facing toggles
+  //   - four mutually-exclusive cutaway modes with lerped transitions
+  //   - conceptual electrical-flow pulses + micro-sparks + copper current-glow
+  //   - blue/orange magnetic field lines around the fixed stator
+  //   - cooling airflow particles rear -> vents tied to RPM
+  //   - HTML-overlay technical labels with leader lines tracking in screen space
+  //
+  // All effect objects are created ONCE; the loop mutates them in place and
+  // reuses scratch vectors so no per-frame garbage is allocated.
+  // ===========================================================================
+
+  // --- Split the grinding disc into its own sub-group so the nine visibility --
+  // toggles can control "Spindle" and "Grinding Disc" independently. FEAT-001
+  // built the disc inside spindleAssembly; move it + its clamp flange/nut into a
+  // dedicated `grindingDisc` group (still a child of spindleGroup so it spins).
+  const grindingDiscGroup = new THREE.Group();
+  grindingDiscGroup.name = 'grindingDisc';
+  (function splitDisc() {
+    // The disc sits at y=-1.33, the outer clamp flange at y=-1.4 and nut at
+    // y=-1.48 inside spindleAssembly. Identify them by their Y position and
+    // reparent into grindingDiscGroup. The spindle shaft + inner flange stay.
+    const moveY = [-1.33, -1.4, -1.48];
+    const toMove = [];
+    spindleAssembly.children.forEach((child) => {
+      if (moveY.some((y) => Math.abs(child.position.y - y) < 0.001)) toMove.push(child);
+    });
+    toMove.forEach((child) => grindingDiscGroup.add(child)); // reparent (keeps local pos)
+    spindleGroup.add(grindingDiscGroup);
+  })();
+  registerComponent('grindingDisc', grindingDiscGroup);
+
+  // ---------------------------------------------------------------------------
+  // (1) RPM stepped speed model + playback multiplier.
+  // ---------------------------------------------------------------------------
+  const RPM_STEPS = [0, 2000, 4000, 6000, 8000, 11000];
+  let currentRPM = 0;                 // active RPM value (one of RPM_STEPS)
+  let playbackSpeed = 1.0;            // global multiplier (slow-motion in FEAT-003)
+  // Bevel ratio: pinion (12 teeth) -> crown (28 teeth) reduction. The spindle
+  // turns slower than the rotor and on the perpendicular axis.
+  const BEVEL_RATIO = 12 / 28;
+
+  // RPM -> radians/sec. (RPM / 60) rev/s * 2*PI rad/rev.
+  function rpmToRadPerSec(rpm) { return (rpm / 60) * Math.PI * 2; }
+
+  function setRPM(rpm) {
+    // Snap to the nearest defined step so the control is truly stepped.
+    let nearest = RPM_STEPS[0];
+    let best = Infinity;
+    for (const step of RPM_STEPS) {
+      const d = Math.abs(step - rpm);
+      if (d < best) { best = d; nearest = step; }
+    }
+    currentRPM = nearest;
+    return currentRPM;
+  }
+  function getRPM() { return currentRPM; }
+  function setPlaybackSpeed(mult) { playbackSpeed = Math.max(0, mult); return playbackSpeed; }
+  function getPlaybackSpeed() { return playbackSpeed; }
+
+  // ---------------------------------------------------------------------------
+  // (2) Camera controls: Reset Camera + Auto Rotate toggle.
+  // ---------------------------------------------------------------------------
+  function resetCamera() {
+    // Temporarily suspend damping so the reset snaps cleanly to the home view
+    // without a one-frame easing artifact, then restore the user's setting.
+    const prevDamping = controls.enableDamping;
+    controls.enableDamping = false;
+    camera.position.copy(initialCamera.position);
+    controls.target.copy(initialCamera.target);
+    camera.lookAt(initialCamera.target);
+    controls.update();
+    controls.enableDamping = prevDamping;
+  }
+  function setAutoRotate(on) { controls.autoRotate = !!on; return controls.autoRotate; }
+  function toggleAutoRotate() { controls.autoRotate = !controls.autoRotate; return controls.autoRotate; }
+
+  // ---------------------------------------------------------------------------
+  // (3) Component visibility — the nine user-facing toggles.
+  // The UI names map onto component-registry groups. "Bevel Gear" controls both
+  // the pinion and crown gear; the others are 1:1.
+  // ---------------------------------------------------------------------------
+  const VISIBILITY_GROUPS = {
+    housing: ['housing'],
+    armature: ['armature'],
+    commutator: ['commutator'],
+    carbonBrushes: ['carbonBrushes'],
+    stator: ['stator'],
+    coolingFan: ['coolingFan'],
+    bevelGear: ['pinion', 'crownGear'],
+    spindle: ['spindleAssembly'],
+    grindingDisc: ['grindingDisc']
+  };
+  function setComponentVisible(name, visible) {
+    const keys = VISIBILITY_GROUPS[name] || [name];
+    let changed = false;
+    for (const key of keys) {
+      const grp = components.get(key);
+      if (grp) { grp.visible = !!visible; changed = true; }
+    }
+    return changed;
+  }
+
+  // ---------------------------------------------------------------------------
+  // (4) Cutaway modes — exactly four, mutually exclusive, lerped transitions.
+  // ---------------------------------------------------------------------------
+  const CUTAWAY_MODES = ['full', 'transparent', 'section', 'exploded'];
+  const CUTAWAY_LABELS = {
+    full: 'Full Body',
+    transparent: 'Transparent Housing',
+    section: 'Section Cutaway',
+    exploded: 'Exploded View'
+  };
+  let cutawayMode = 'full';
+
+  // Housing fade: animate opacity toward a target each frame (lerp, not snap).
+  let housingOpacityTarget = 1.0;
+  const HOUSING_MATS = [materials.housing, materials.housingAccent];
+
+  // Section cutaway uses a clipping plane on the housing materials so a
+  // cross-section is revealed. Plane normal +Z, constant 0 clips the near half.
+  // NOTE: this is a deliberate world-space stylistic cut; the plane is fixed in
+  // world coordinates, so orbiting the camera changes which half is revealed
+  // rather than cutting along a model-relative axis. A model-relative section
+  // would require re-deriving the plane from the model transform each frame;
+  // the world-fixed cut is intentional here and kept simple.
+  const sectionClipPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+  let sectionClipActive = false;
+
+  // Exploded View: per-component outward offset along its assembly axis. Each
+  // entry is an offset vector (world-ish, applied relative to the home position).
+  // The loop lerps each component between its home position and home+offset.
+  const EXPLODE_OFFSETS = {
+    housing:        new THREE.Vector3(0, 2.6, 0),
+    armature:       new THREE.Vector3(0, 0, 0),      // stays as the core reference
+    commutator:     new THREE.Vector3(-2.4, 0, 0),   // slides out the rear (motor axis = world X)
+    carbonBrushes:  new THREE.Vector3(-2.4, 1.2, 0),
+    stator:         new THREE.Vector3(0, -2.4, 0),
+    coolingFan:     new THREE.Vector3(-3.6, 0, 0),
+    pinion:         new THREE.Vector3(2.4, 0, 0),
+    crownGear:      new THREE.Vector3(0, 2.4, 0),    // lifts up the spindle axis (world Y)
+    spindleAssembly:new THREE.Vector3(0, -2.4, 0),
+    grindingDisc:   new THREE.Vector3(0, -4.0, 0)
+  };
+  let explodeAmount = 0;        // current 0..1 interpolation
+  let explodeTarget = 0;        // target 0..1
+
+  // Scratch objects reused by the explode lerp (no per-frame allocation).
+  const _homePos = new THREE.Vector3();
+  const _explodedPos = new THREE.Vector3();
+
+  function applyCutawayTargets(mode) {
+    // Set the per-mode targets; the animation loop lerps toward them.
+    housingOpacityTarget = (mode === 'transparent') ? 0.18 : 1.0;
+    sectionClipActive = (mode === 'section');
+    explodeTarget = (mode === 'exploded') ? 1.0 : 0.0;
+
+    // Clipping planes are assigned immediately (the reveal itself is a hard
+    // geometric cut); the housing opacity + explode offsets animate smoothly.
+    const clip = sectionClipActive ? [sectionClipPlane] : [];
+    for (const m of HOUSING_MATS) {
+      m.clippingPlanes = clip;
+      m.clipShadows = sectionClipActive;
+      m.needsUpdate = true;
+    }
+    // Track the section state directly so clipping is turned OFF again when any
+    // non-section mode is active (previously this latched on and never cleared).
+    renderer.localClippingEnabled = sectionClipActive;
+  }
+
+  function setCutawayMode(mode) {
+    if (!CUTAWAY_MODES.includes(mode)) return cutawayMode;
+    cutawayMode = mode;
+    applyCutawayTargets(mode);
+    return cutawayMode;
+  }
+
+  // Per-frame cutaway interpolation.
+  function updateCutaway(dt) {
+    // Housing opacity lerp.
+    const k = 1 - Math.pow(0.001, dt); // frame-rate independent smoothing
+    for (const m of HOUSING_MATS) {
+      m.opacity += (housingOpacityTarget - m.opacity) * k;
+      m.depthWrite = m.opacity > 0.95; // transparent housing should not occlude
+      m.transparent = true;
+    }
+
+    // Explode amount lerp + per-component position interpolation.
+    explodeAmount += (explodeTarget - explodeAmount) * k;
+    if (explodeAmount > 0.0005 || explodeTarget > 0) {
+      for (const [name, offset] of Object.entries(EXPLODE_OFFSETS)) {
+        const grp = components.get(name);
+        if (!grp) continue;
+        const home = grp.userData.home;
+        if (!home) continue;
+        _homePos.copy(home.position);
+        _explodedPos.copy(home.position).add(offset);
+        grp.position.lerpVectors(_homePos, _explodedPos, explodeAmount);
+      }
+    } else {
+      // Snap cleanly back to home when fully collapsed.
+      for (const name of Object.keys(EXPLODE_OFFSETS)) {
+        const grp = components.get(name);
+        if (grp && grp.userData.home) grp.position.copy(grp.userData.home.position);
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // (5) Electrical flow visualization — conceptual glowing pulses along a path.
+  // Sequence: cable -> carbon brushes -> commutator -> armature windings ->
+  // (magnetic torque) -> rotor/shaft -> bevel gear -> spindle/disc. One Points
+  // cloud carries all pulses; each particle advances along the polyline path.
+  // ---------------------------------------------------------------------------
+  // Path waypoints in machineRoot-local space (approx. anchor positions).
+  const FLOW_PATH = [
+    new THREE.Vector3(-5.6, -2.2, 0.0), // cable end (power inlet)
+    new THREE.Vector3(-3.7, 0.0, 0.0),  // into the rear
+    new THREE.Vector3(-1.7, 0.42, 0.0), // carbon brush (top)
+    new THREE.Vector3(-1.7, 0.0, 0.0),  // commutator contact
+    new THREE.Vector3(-0.4, 0.0, 0.0),  // armature windings / core
+    new THREE.Vector3(1.9, 0.0, 0.0),   // along shaft toward gearbox
+    new THREE.Vector3(2.3, 0.1, 0.0),   // bevel gear mesh
+    new THREE.Vector3(2.3, -1.2, 0.0)   // spindle / disc output
+  ];
+  // Precompute cumulative segment lengths for even-speed travel.
+  const FLOW_SEG_LEN = [];
+  let FLOW_TOTAL_LEN = 0;
+  for (let i = 0; i < FLOW_PATH.length - 1; i++) {
+    const l = FLOW_PATH[i].distanceTo(FLOW_PATH[i + 1]);
+    FLOW_SEG_LEN.push(l);
+    FLOW_TOTAL_LEN += l;
+  }
+
+  // Build a round glowing sprite texture once (yellow-orange core).
+  function makeGlowTexture(inner = '#fff3c4', outer = '#f6880e') {
+    const size = 64;
+    const cvs = document.createElement('canvas');
+    cvs.width = cvs.height = size;
+    const ctx = cvs.getContext('2d');
+    const grad = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+    grad.addColorStop(0.0, inner);
+    grad.addColorStop(0.35, outer);
+    grad.addColorStop(1.0, 'rgba(246,136,14,0)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, size, size);
+    const tex = new THREE.CanvasTexture(cvs);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+  }
+  const glowTex = makeGlowTexture();
+
+  const FLOW_COUNT = 26;
+  const flowProgress = new Float32Array(FLOW_COUNT); // 0..1 along the path
+  for (let i = 0; i < FLOW_COUNT; i++) flowProgress[i] = i / FLOW_COUNT;
+  const flowPositions = new Float32Array(FLOW_COUNT * 3);
+  const flowGeom = new THREE.BufferGeometry();
+  flowGeom.setAttribute('position', new THREE.BufferAttribute(flowPositions, 3));
+  const flowMat = new THREE.PointsMaterial({
+    size: 0.32, map: glowTex, transparent: true, depthWrite: false,
+    blending: THREE.AdditiveBlending, color: 0xffcf6a
+  });
+  const flowPoints = new THREE.Points(flowGeom, flowMat);
+  flowPoints.frustumCulled = false;
+  machineRoot.add(flowPoints);
+
+  const _flowTmp = new THREE.Vector3();
+  function pointAlongFlow(t, out) {
+    // t in 0..1 -> position along the cumulative polyline.
+    let target = t * FLOW_TOTAL_LEN;
+    for (let i = 0; i < FLOW_SEG_LEN.length; i++) {
+      if (target <= FLOW_SEG_LEN[i] || i === FLOW_SEG_LEN.length - 1) {
+        const f = FLOW_SEG_LEN[i] > 0 ? target / FLOW_SEG_LEN[i] : 0;
+        return out.lerpVectors(FLOW_PATH[i], FLOW_PATH[i + 1], Math.min(1, f));
+      }
+      target -= FLOW_SEG_LEN[i];
+    }
+    return out.copy(FLOW_PATH[FLOW_PATH.length - 1]);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Micro-sparks at the brush/commutator contact (small additive points that
+  // flicker outward then reset). Two contact points (top + bottom brush).
+  // ---------------------------------------------------------------------------
+  const SPARK_COUNT = 18;
+  const sparkPositions = new Float32Array(SPARK_COUNT * 3);
+  const sparkVel = new Float32Array(SPARK_COUNT * 3);
+  const sparkLife = new Float32Array(SPARK_COUNT);
+  const SPARK_ORIGINS = [
+    new THREE.Vector3(-1.7, 0.42, 0.0),  // top brush contact
+    new THREE.Vector3(-1.7, -0.42, 0.0)  // bottom brush contact
+  ];
+  for (let i = 0; i < SPARK_COUNT; i++) { sparkLife[i] = Math.random(); }
+  const sparkGeom = new THREE.BufferGeometry();
+  sparkGeom.setAttribute('position', new THREE.BufferAttribute(sparkPositions, 3));
+  const sparkMat = new THREE.PointsMaterial({
+    size: 0.16, map: makeGlowTexture('#ffffff', '#ffb43a'), transparent: true,
+    depthWrite: false, blending: THREE.AdditiveBlending, color: 0xfff0c0
+  });
+  const sparkPoints = new THREE.Points(sparkGeom, sparkMat);
+  sparkPoints.frustumCulled = false;
+  machineRoot.add(sparkPoints);
+
+  function updateSparks(dt, energized) {
+    for (let i = 0; i < SPARK_COUNT; i++) {
+      const o = i * 3;
+      sparkLife[i] -= dt * (2.2 + currentRPM / 4000);
+      if (sparkLife[i] <= 0) {
+        if (energized) {
+          const origin = SPARK_ORIGINS[i % SPARK_ORIGINS.length];
+          sparkPositions[o] = origin.x + (Math.random() - 0.5) * 0.1;
+          sparkPositions[o + 1] = origin.y + (Math.random() - 0.5) * 0.1;
+          sparkPositions[o + 2] = origin.z + (Math.random() - 0.5) * 0.1;
+          sparkVel[o] = (Math.random() - 0.5) * 1.2;
+          sparkVel[o + 1] = (Math.random() - 0.5) * 1.2;
+          sparkVel[o + 2] = (Math.random() - 0.5) * 1.2;
+          sparkLife[i] = 0.25 + Math.random() * 0.25;
+        } else {
+          // Park off-screen when not energized.
+          sparkPositions[o + 1] = -999;
+          sparkLife[i] = 0.5 + Math.random();
+        }
+      } else {
+        sparkPositions[o] += sparkVel[o] * dt;
+        sparkPositions[o + 1] += sparkVel[o + 1] * dt;
+        sparkPositions[o + 2] += sparkVel[o + 2] * dt;
+      }
+    }
+    sparkGeom.attributes.position.needsUpdate = true;
+  }
+
+  // ---------------------------------------------------------------------------
+  // (6) Magnetic field visualization — transparent blue/orange curved lines
+  // around the fixed stator poles. Parented to statorGroup so they stay fixed.
+  // ---------------------------------------------------------------------------
+  const magneticGroup = new THREE.Group();
+  magneticGroup.name = 'magneticField';
+  (function buildMagneticField() {
+    const north = new THREE.LineBasicMaterial({ color: 0x3a7bd5, transparent: true, opacity: 0.55 });
+    const south = new THREE.LineBasicMaterial({ color: 0xf6880e, transparent: true, opacity: 0.55 });
+    // Loops arc from the top pole (north) to the bottom pole (south) on both
+    // sides of the armature. statorGroup local Z == motor axis; poles are at
+    // local y = +/-0.78. Build arcs in the local X-Y plane, spread along Z.
+    for (let s = -1; s <= 1; s += 2) {           // two sides (along local X)
+      for (let k = 0; k < 3; k++) {              // three nested loops per side
+        const spread = 0.55 + k * 0.33;
+        const pts = [];
+        const steps = 36;
+        for (let i = 0; i <= steps; i++) {
+          const t = i / steps;
+          const ang = Math.PI * t;               // half loop top -> bottom
+          const x = s * Math.sin(ang) * spread;
+          const y = Math.cos(ang) * (0.95 + k * 0.18);
+          const z = (k - 1) * 0.5;
+          pts.push(new THREE.Vector3(x, y, z));
+        }
+        const geo = new THREE.BufferGeometry().setFromPoints(pts);
+        const line = new THREE.Line(geo, s > 0 ? north : south);
+        magneticGroup.add(line);
+      }
+    }
+  })();
+  statorGroup.add(magneticGroup);
+
+  // ---------------------------------------------------------------------------
+  // (7) Cooling airflow — transparent particles flowing rear -> front vents.
+  // Emission liveliness is tied to RPM. Particles travel along +X (through the
+  // body) then disperse at the gearbox-head vents.
+  // ---------------------------------------------------------------------------
+  const AIR_COUNT = 40;
+  const airPositions = new Float32Array(AIR_COUNT * 3);
+  const airData = new Float32Array(AIR_COUNT * 3); // [radius, angle, speedJitter]
+  const AIR_START_X = -2.6;   // rear intake
+  const AIR_END_X = 2.3;      // gearbox head vents
+  for (let i = 0; i < AIR_COUNT; i++) {
+    const o = i * 3;
+    airPositions[o] = AIR_START_X + Math.random() * (AIR_END_X - AIR_START_X);
+    const r = 0.3 + Math.random() * 0.8;
+    const a = Math.random() * Math.PI * 2;
+    airPositions[o + 1] = Math.sin(a) * r;
+    airPositions[o + 2] = Math.cos(a) * r;
+    airData[o] = r;
+    airData[o + 1] = a;
+    airData[o + 2] = 0.6 + Math.random() * 0.8;
+  }
+  const airGeom = new THREE.BufferGeometry();
+  airGeom.setAttribute('position', new THREE.BufferAttribute(airPositions, 3));
+  const airMat = new THREE.PointsMaterial({
+    size: 0.12, map: makeGlowTexture('#eaf4ff', '#9cc2ff'), transparent: true,
+    depthWrite: false, blending: THREE.AdditiveBlending, color: 0xbcd6ff, opacity: 0.6
+  });
+  const airPoints = new THREE.Points(airGeom, airMat);
+  airPoints.frustumCulled = false;
+  machineRoot.add(airPoints);
+
+  function updateAirflow(dt) {
+    // Flow speed scales with RPM; no flow when the motor is off.
+    const base = currentRPM > 0 ? (0.8 + currentRPM / 3000) : 0;
+    airMat.opacity = currentRPM > 0 ? 0.6 : 0.0;
+    if (base === 0) return;
+    for (let i = 0; i < AIR_COUNT; i++) {
+      const o = i * 3;
+      airPositions[o] += base * airData[o + 2] * dt;
+      // Gentle swirl following the fan rotation.
+      airData[o + 1] += dt * (1.5 + currentRPM / 3000);
+      const r = airData[o];
+      airPositions[o + 1] = Math.sin(airData[o + 1]) * r;
+      airPositions[o + 2] = Math.cos(airData[o + 1]) * r;
+      if (airPositions[o] > AIR_END_X) {
+        airPositions[o] = AIR_START_X;                 // recycle to the intake
+        airData[o] = 0.3 + Math.random() * 0.8;
+        airData[o + 1] = Math.random() * Math.PI * 2;
+      }
+    }
+    airGeom.attributes.position.needsUpdate = true;
+  }
+
+  // ---------------------------------------------------------------------------
+  // (8) HTML-overlay technical labels with leader lines.
+  // Each label tracks a component anchor; the anchor world position is projected
+  // to screen coordinates every frame (Vector3.project(camera)) using a single
+  // cached vector. Badges hide when the anchor is behind the camera. Simple
+  // vertical anti-overlap nudges keep badges from stacking excessively.
+  // ---------------------------------------------------------------------------
+  const overlayLayer = document.getElementById('overlay-layer');
+  const leaderSvg = document.getElementById('leader-svg');
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+
+  // Anchor points are in machineRoot-local space (machineRoot is at the origin
+  // so local == world here). Each entry: label text + anchor + a screen-offset.
+  const LABEL_DEFS = [
+    { key: 'armature',      text: 'ARMATURE / ROTOR',  anchor: new THREE.Vector3(-0.4, 0.6, 0.0),  off: { x: -150, y: -70 } },
+    { key: 'commutator',    text: 'COMMUTATOR',        anchor: new THREE.Vector3(-1.7, 0.4, 0.0),  off: { x: -160, y: 30 } },
+    { key: 'carbonBrushes', text: 'CARBON BRUSHES',    anchor: new THREE.Vector3(-1.7, 0.9, 0.0),  off: { x: -150, y: -30 } },
+    { key: 'stator',        text: 'STATOR WINDINGS',   anchor: new THREE.Vector3(-0.4, 1.3, 0.0),  off: { x: 140, y: -90 } },
+    { key: 'coolingFan',    text: 'COOLING FAN',       anchor: new THREE.Vector3(-2.3, 0.0, 0.5),  off: { x: -160, y: 90 } },
+    { key: 'bevelGear',     text: 'BEVEL GEAR',        anchor: new THREE.Vector3(2.3, 0.65, 0.0),  off: { x: 150, y: -40 } },
+    { key: 'spindle',       text: 'SPINDLE',           anchor: new THREE.Vector3(2.3, -0.8, 0.0),  off: { x: 150, y: 10 } },
+    { key: 'grindingDisc',  text: 'GRINDING DISC',     anchor: new THREE.Vector3(2.3, -1.33, 0.0), off: { x: 150, y: 70 } }
+  ];
+
+  // Build the DOM badges + SVG leader lines once.
+  const labelObjects = LABEL_DEFS.map((def) => {
+    const el = document.createElement('div');
+    el.className = 'tech-label';
+    el.innerHTML = '<span class="lbl-dot"></span>' + def.text;
+    overlayLayer.appendChild(el);
+    const line = document.createElementNS(SVG_NS, 'line');
+    leaderSvg.appendChild(line);
+    return { def, el, line, visible: true, screenY: 0 };
+  });
+
+  // Reused across every label projection — no per-frame allocation.
+  const _labelProj = new THREE.Vector3();
+
+  function updateLabels() {
+    const _ls = stageSize();
+    const w = _ls.w;
+    const h = _ls.h;
+    // First pass: project anchors and compute desired badge screen positions.
+    for (const L of labelObjects) {
+      _labelProj.copy(L.def.anchor);
+      _labelProj.project(camera); // NDC; z > 1 (or w<0) => behind camera
+      const behind = _labelProj.z > 1;
+      // Hide when behind the camera, when the owning component is hidden, or
+      // (optionally) off-screen far out.
+      const grp = components.get(L.def.key === 'bevelGear' ? 'crownGear' : (L.def.key === 'spindle' ? 'spindleAssembly' : L.def.key));
+      const groupVisible = grp ? grp.visible : true;
+      if (behind || !groupVisible) {
+        L.visible = false;
+        L.el.classList.add('label-hidden');
+        L.line.setAttribute('visibility', 'hidden');
+        continue;
+      }
+      L.visible = true;
+      L.el.classList.remove('label-hidden');
+      L.line.setAttribute('visibility', 'visible');
+
+      const ax = (_labelProj.x * 0.5 + 0.5) * w;   // anchor screen X
+      const ay = (-_labelProj.y * 0.5 + 0.5) * h;  // anchor screen Y
+      let bx = ax + L.def.off.x;                    // badge screen X
+      let by = ay + L.def.off.y;                    // badge screen Y
+      // Keep badges inside the viewport margins.
+      bx = Math.max(60, Math.min(w - 60, bx));
+      by = Math.max(24, Math.min(h - 24, by));
+      L._ax = ax; L._ay = ay; L._bx = bx; L._by = by;
+    }
+
+    // Second pass: simple anti-overlap. Sort visible badges by Y and push apart.
+    const vis = labelObjects.filter((L) => L.visible).sort((a, b) => a._by - b._by);
+    const MIN_GAP = 22;
+    for (let i = 1; i < vis.length; i++) {
+      if (vis[i]._by - vis[i - 1]._by < MIN_GAP) {
+        vis[i]._by = vis[i - 1]._by + MIN_GAP;
+      }
+    }
+
+    // Third pass: write to the DOM / SVG.
+    for (const L of vis) {
+      L.el.style.left = L._bx + 'px';
+      L.el.style.top = L._by + 'px';
+      L.line.setAttribute('x1', L._ax);
+      L.line.setAttribute('y1', L._ay);
+      L.line.setAttribute('x2', L._bx);
+      L.line.setAttribute('y2', L._by);
+    }
+  }
+
+  // FEAT-003 "Hide Overlay" hook: toggle the whole label/leader-line layer.
+  function setOverlayVisible(visible) {
+    overlayLayer.classList.toggle('overlay-hidden', !visible);
+    return visible;
+  }
+
+  // ---------------------------------------------------------------------------
+  // RENDER LOOP — reuse vectors, no per-frame allocation.
+  // ---------------------------------------------------------------------------
+  const _tmpVec = new THREE.Vector3(); // shared scratch (kept from FEAT-001)
+  void _tmpVec;
+  const clock = new THREE.Clock();
+
+  function onResize() {
+    // Size the renderer + camera to the vertical stage box (not the window),
+    // so the canvas, label projection and 9:16 framing stay consistent.
+    const { w, h } = stageSize();
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+    // Re-apply the device pixel ratio so moving the window between displays of
+    // different DPR re-sharpens the canvas without a reload.
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(w, h, false);
+  }
+  window.addEventListener('resize', onResize);
+  onResize();
+
+  function animate() {
+    requestAnimationFrame(animate);
+    const dt = Math.min(clock.getDelta(), 0.05); // clamp to avoid jumps on tab refocus
+    const sdt = dt * playbackSpeed;
+    const energized = currentRPM > 0;
+
+    // (1) RPM-driven rotation. rotorGroup spins on its local Z (motor axis);
+    // spindleGroup spins on world Y, coupled via the bevel ratio.
+    if (energized) {
+      const rotorRad = rpmToRadPerSec(currentRPM) * sdt;
+      rotorGroup.rotation.z += rotorRad;
+      spindleGroup.rotation.y += rotorRad * BEVEL_RATIO;
+    }
+
+    // (4) Cutaway lerp (housing opacity, clip, explode offsets).
+    updateCutaway(dt);
+
+    // (5) Electrical flow pulses advance along the path when energized.
+    if (energized) {
+      const flowSpeed = (0.12 + currentRPM / 22000) * playbackSpeed;
+      for (let i = 0; i < FLOW_COUNT; i++) {
+        flowProgress[i] += flowSpeed * dt * 6;
+        if (flowProgress[i] > 1) flowProgress[i] -= 1;
+        pointAlongFlow(flowProgress[i], _flowTmp);
+        flowPositions[i * 3] = _flowTmp.x;
+        flowPositions[i * 3 + 1] = _flowTmp.y;
+        flowPositions[i * 3 + 2] = _flowTmp.z;
+      }
+      flowGeom.attributes.position.needsUpdate = true;
+    }
+    flowPoints.visible = energized;
+
+    // Copper current-glow: pulse emissive intensity to suggest current flow.
+    const glow = energized ? (0.35 + 0.35 * Math.sin(clock.elapsedTime * 6)) * (0.5 + currentRPM / 22000) : 0;
+    materials.copper.emissiveIntensity = glow;
+    materials.copper.emissive.setHex(0xff7a18);
+
+    // Micro-sparks + cooling airflow + magnetic-field shimmer.
+    updateSparks(dt, energized);
+    updateAirflow(dt);
+    magneticGroup.visible = energized;
+    if (energized) {
+      const pulse = 0.35 + 0.2 * Math.sin(clock.elapsedTime * 4);
+      magneticGroup.children.forEach((line) => { line.material.opacity = pulse; });
+    }
+
+    controls.update();
+    renderer.render(scene, camera);
+
+    // (8) Labels track their anchors in screen space every frame.
+    updateLabels();
+  }
+  animate();
+
+  // ---------------------------------------------------------------------------
+  // Expose central objects + FEAT-002 API for later features (FEAT-003).
+  // ---------------------------------------------------------------------------
+  window.APP = {
+    THREE,
+    scene,
+    camera,
+    renderer,
+    controls,
+    components,
+    homeTransforms,
+    materials,
+    machineRoot,
+    rotorGroup,
+    statorGroup,
+    spindleGroup,
+    initialCamera,
+
+    // RPM + playback
+    RPM_STEPS,
+    setRPM,
+    getRPM,
+    setPlaybackSpeed,
+    getPlaybackSpeed,
+
+    // camera controls
+    resetCamera,
+    setAutoRotate,
+    toggleAutoRotate,
+
+    // visibility
+    VISIBILITY_GROUPS,
+    setComponentVisible,
+
+    // cutaway
+    CUTAWAY_MODES,
+    CUTAWAY_LABELS,
+    setCutawayMode,
+    getCutawayMode() { return cutawayMode; },
+
+    // overlay labels (FEAT-003 "Hide Overlay" + label-update hook)
+    setOverlayVisible,
+    updateLabels,
+    labelObjects
+  };
+
+  /* ===========================================================================
+   * FEAT-003 — VERTICAL 9:16 UI/UX + 10-STAGE STORYTELLING STATE MACHINE
+   * ---------------------------------------------------------------------------
+   * Built entirely on top of the FEAT-002 API exposed above (window.APP). This
+   * does NOT touch the 3D scene construction; it only drives it via the public
+   * functions (setCutawayMode, setComponentVisible, setRPM, setPlaybackSpeed,
+   * resetCamera, setAutoRotate, setOverlayVisible).
+   *
+   * Clickable UI lives in #ui-layer (pointer-events re-enabled per panel) so
+   * OrbitControls keep working through the empty regions. "Hide Overlay" hides
+   * BOTH the labels (#overlay-layer) and the UI (#ui-layer) WITHOUT cancelling
+   * requestAnimationFrame — the 3D animation keeps running.
+   * ========================================================================= */
+  (function FEAT003_UI() {
+    const API = window.APP;
+
+    // -----------------------------------------------------------------------
+    // 10-stage table. Each stage carries: a short title, the explanation copy
+    // (with orange-highlighted key terms), and an apply() that drives the scene
+    // via the FEAT-002 API. The five provided Tahap sentences are used verbatim
+    // (their key terms wrapped in <span class="hl">), each bound to its intended
+    // conceptual stage in electrical-flow order. Remaining stages use concise,
+    // consistent Indonesian copy.
+    // -----------------------------------------------------------------------
+    // Each stage's `plain` string is the explanation shown to the user VERBATIM.
+    // The five provided Tahap sentences map to the stages that actually show the
+    // behaviour they describe, following the spec's conceptual order:
+    //   Tahap 1 "Arus listrik masuk melalui kabel menuju sikat karbon." -> stage 4
+    //           (arus mulai mengalir, RPM > 0 so current FX are on)
+    //   Tahap 2 "Sikat karbon menyalurkan arus ke komutator."           -> stage 5
+    //           (brush-contact, energized)
+    //   Tahap 3 "Arus mengalir melalui kumparan armature."              -> stage 6
+    //           (armature energized, FX on)
+    //   Tahap 4 "Interaksi medan magnet menghasilkan torsi yang memutar rotor."
+    //           -> stage 7 (stator field interacts with the armature, energized)
+    //   Tahap 5 "Putaran diteruskan melalui bevel gear menuju mata gerinda."
+    //           -> stage 9 (bevel transmits motion, energized)
+    // Stage 3 (reveal internals) deliberately carries its own non-current copy so
+    // the narration never claims current is flowing while the scene is at RPM 0.
+    // `terms` lists the technical words to highlight in orange (#D96B27) at render
+    // time without altering the sentence text itself.
+    const STAGES = [
+      {
+        title: 'Mesin utuh',
+        plain: 'Mesin gerinda dalam kondisi utuh. Bodi tertutup rapat, siap kita bedah lapis demi lapis.',
+        terms: ['utuh'],
+        apply() { API.setCutawayMode('full'); showInternals(false); API.setRPM(0); }
+      },
+      {
+        title: 'Casing transparan',
+        plain: 'Casing dibuat transparan agar kita bisa mengintip komponen di dalam bodi motor universal.',
+        terms: ['transparan'],
+        apply() { API.setCutawayMode('transparent'); showInternals(false); API.setRPM(0); }
+      },
+      {
+        title: 'Komponen internal',
+        // Reveal-only stage: the internals are exposed while the motor is still
+        // de-energized (RPM 0). No current/flow sentence here; that would
+        // contradict the static scene. Current narration begins at stage 4.
+        plain: 'Komponen internal diperlihatkan: armature, komutator, sikat karbon, stator, hingga bevel gear.',
+        terms: ['armature', 'komutator', 'sikat karbon', 'stator', 'bevel gear'],
+        apply() { API.setCutawayMode('transparent'); showInternals(true); API.setRPM(0); }
+      },
+      {
+        title: 'Arus listrik mengalir',
+        // Provided Tahap sentence (verbatim).
+        plain: 'Arus listrik masuk melalui kabel menuju sikat karbon.',
+        terms: ['kabel', 'sikat karbon'],
+        apply() { API.setCutawayMode('transparent'); showInternals(true); API.setRPM(2000); }
+      },
+      {
+        title: 'Sikat karbon menyentuh komutator',
+        // Provided Tahap sentence (verbatim).
+        plain: 'Sikat karbon menyalurkan arus ke komutator.',
+        terms: ['Sikat karbon', 'komutator'],
+        apply() { API.setCutawayMode('transparent'); showInternals(true); API.setRPM(2000); }
+      },
+      {
+        title: 'Armature berputar',
+        // Provided Tahap sentence (verbatim). Energized: current now flows
+        // through the armature windings (RPM > 0 so the flow/glow FX are on).
+        plain: 'Arus mengalir melalui kumparan armature.',
+        terms: ['kumparan armature'],
+        apply() { API.setCutawayMode('transparent'); showInternals(true); API.setRPM(4000); }
+      },
+      {
+        title: 'Stator menghasilkan medan magnet',
+        // Provided Tahap sentence (verbatim). The stator's magnetic field
+        // interacts with the energized armature to produce the torque that
+        // spins the rotor: energized stage (RPM > 0), FX on.
+        plain: 'Interaksi medan magnet menghasilkan torsi yang memutar rotor.',
+        terms: ['medan magnet', 'torsi', 'rotor'],
+        apply() { API.setCutawayMode('transparent'); showInternals(true); API.setRPM(6000); }
+      },
+      {
+        title: 'Cooling fan berputar',
+        plain: 'Kipas pendingin ikut berputar, mengalirkan udara untuk menjaga suhu motor tetap aman.',
+        terms: ['Kipas pendingin', 'udara'],
+        apply() { API.setCutawayMode('transparent'); showInternals(true); API.setRPM(8000); }
+      },
+      {
+        title: 'Bevel gear meneruskan putaran',
+        // Provided Tahap sentence (verbatim).
+        plain: 'Putaran diteruskan melalui bevel gear menuju mata gerinda.',
+        terms: ['bevel gear', 'mata gerinda'],
+        apply() { API.setCutawayMode('transparent'); showInternals(true); API.setRPM(8000); }
+      },
+      {
+        title: 'Grinding disc berputar',
+        plain: 'Mata gerinda berputar penuh pada ~11.000 RPM, siap memotong dan mengasah.',
+        terms: ['Mata gerinda', '~11.000 RPM'],
+        apply() { API.setCutawayMode('full'); showInternals(true); API.setRPM(11000); }
+      }
+    ];
+    const STAGE_COUNT = STAGES.length; // 10
+
+    // Escape HTML, then wrap any configured technical terms in an orange
+    // highlight span. The visible text remains the verbatim sentence.
+    function escapeHtml(s) {
+      return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+    function renderExplanation(st) {
+      let html = escapeHtml(st.plain);
+      (st.terms || []).forEach((term) => {
+        const esc = escapeHtml(term);
+        // Replace the first literal occurrence only, preserving sentence text.
+        const needle = esc.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        html = html.replace(new RegExp(needle), '<span class="hl">' + esc + '</span>');
+      });
+      return html;
+    }
+
+    // Convenience: toggle every internal component's visibility together. The
+    // housing is always kept visible so cutaway modes govern its transparency.
+    function showInternals(on) {
+      ['armature','commutator','carbonBrushes','stator','coolingFan','bevelGear','spindle','grindingDisc']
+        .forEach((name) => API.setComponentVisible(name, !!on));
+      API.setComponentVisible('housing', true);
+    }
+
+    // Active-component highlight per stage: which label(s) to emphasise.
+    const STAGE_FOCUS = [
+      [], ['housing'], ['armature'], ['carbonBrushes'], ['commutator'],
+      ['armature'], ['stator'], ['coolingFan'], ['bevelGear'], ['grindingDisc']
+    ];
+
+    // -----------------------------------------------------------------------
+    // State machine state.
+    // -----------------------------------------------------------------------
+    let stageIndex = 0;        // 0-based (Tahap 1 == index 0)
+    let playing = false;       // auto-play transport
+    let slowMotion = false;    // Slow Motion vs Normal Speed
+    const NORMAL_SPEED = 1.0;
+    const SLOW_SPEED = 0.3;
+    const STAGE_DURATION = 5.0; // seconds per stage at normal speed (auto-play)
+    let stageTimer = 0;
+
+    // -----------------------------------------------------------------------
+    // DOM references.
+    // -----------------------------------------------------------------------
+    const uiLayer   = document.getElementById('ui-layer');
+    const overlay   = document.getElementById('overlay-layer');
+    const safeZone  = document.getElementById('safe-zone');
+    const restoreUI = document.getElementById('restore-ui');
+
+    const explainTag  = document.getElementById('explain-tag');
+    const explainText = document.getElementById('explain-text');
+    const progressLabel = document.getElementById('progress-label');
+    const progressFill  = document.getElementById('progress-fill');
+
+    const btnPlay    = document.getElementById('btn-play');
+    const btnPrev    = document.getElementById('btn-prev');
+    const btnNext    = document.getElementById('btn-next');
+    const btnRestart = document.getElementById('btn-restart');
+    const btnSpeed   = document.getElementById('btn-speed');
+
+    const rpmSlider = document.getElementById('rpm-slider');
+    const rpmValue  = document.getElementById('rpm-value');
+
+    const btnResetCam   = document.getElementById('btn-reset-cam');
+    const btnAutoRotate = document.getElementById('btn-autorotate');
+    const btnSafeZone   = document.getElementById('btn-safezone');
+    const btnHideOverlay= document.getElementById('btn-hide-overlay');
+
+    // -----------------------------------------------------------------------
+    // Apply a stage: drive the scene, update explanation + progress + highlight.
+    // -----------------------------------------------------------------------
+    function applyStage(i) {
+      stageIndex = Math.max(0, Math.min(STAGE_COUNT - 1, i));
+      const st = STAGES[stageIndex];
+      st.apply();
+      stageTimer = 0;
+
+      const n = stageIndex + 1;
+      explainTag.textContent = 'Tahap ' + n + '/' + STAGE_COUNT;
+      explainText.innerHTML = renderExplanation(st);
+      progressLabel.innerHTML = 'Tahap ' + n + '/' + STAGE_COUNT + ' &mdash; ' + st.title;
+      progressFill.style.width = (n / STAGE_COUNT * 100) + '%';
+
+      // Active-component label highlight.
+      const focus = STAGE_FOCUS[stageIndex] || [];
+      (API.labelObjects || []).forEach((L) => {
+        const key = L.def.key;
+        const hot = focus.indexOf(key) !== -1;
+        L.el.style.borderColor = hot ? '#D96B27' : '';
+        L.el.style.boxShadow = hot ? '0 0 12px rgba(217,107,39,0.8)' : '';
+        L.el.style.color = hot ? '#fff' : '';
+      });
+
+      // Keep the RPM slider + readout in sync with the stage.
+      syncRpmUiFromScene();
+    }
+
+    function nextStage() { applyStage((stageIndex + 1) % STAGE_COUNT); }
+    function prevStage() { applyStage((stageIndex - 1 + STAGE_COUNT) % STAGE_COUNT); }
+    function restart() { setPlaying(false); applyStage(0); }
+
+    // -----------------------------------------------------------------------
+    // Transport.
+    // -----------------------------------------------------------------------
+    function setPlaying(on) {
+      playing = !!on;
+      btnPlay.innerHTML = playing ? '<span class="ctl-icon">&#10073;&#10073;</span> Pause'
+                                  : '<span class="ctl-icon">&#9654;</span> Play';
+      btnPlay.classList.toggle('active', playing);
+    }
+    function togglePlay() { setPlaying(!playing); }
+
+    function setSlowMotion(on) {
+      slowMotion = !!on;
+      API.setPlaybackSpeed(slowMotion ? SLOW_SPEED : NORMAL_SPEED);
+      btnSpeed.textContent = slowMotion ? 'Normal Speed' : 'Slow Motion';
+      btnSpeed.classList.toggle('active', slowMotion);
+    }
+
+    // -----------------------------------------------------------------------
+    // RPM slider — discrete stops 0/2000/4000/6000/8000/11000.
+    // The slider index (0..5) maps to API.RPM_STEPS.
+    // -----------------------------------------------------------------------
+    const RPM_STEPS = API.RPM_STEPS; // [0,2000,4000,6000,8000,11000]
+    function rpmStepLabel(rpm) {
+      return rpm === 0 ? '0 RPM' : rpm.toLocaleString('id-ID') + ' RPM';
+    }
+    function syncRpmUiFromScene() {
+      const rpm = API.getRPM();
+      let idx = RPM_STEPS.indexOf(rpm);
+      if (idx < 0) idx = 0;
+      rpmSlider.value = String(idx);
+      rpmValue.textContent = rpmStepLabel(rpm);
+    }
+    rpmSlider.addEventListener('input', () => {
+      const idx = Math.max(0, Math.min(RPM_STEPS.length - 1, parseInt(rpmSlider.value, 10) || 0));
+      const rpm = RPM_STEPS[idx];
+      API.setRPM(rpm);
+      rpmValue.textContent = rpmStepLabel(API.getRPM());
+    });
+
+    // -----------------------------------------------------------------------
+    // Camera controls.
+    // -----------------------------------------------------------------------
+    btnResetCam.addEventListener('click', () => API.resetCamera());
+    btnAutoRotate.addEventListener('click', () => {
+      const on = API.toggleAutoRotate();
+      btnAutoRotate.classList.toggle('on', on);
+    });
+
+    // -----------------------------------------------------------------------
+    // Cutaway mode buttons (exactly four) — Full Body / Transparent Housing /
+    // Section Cutaway / Exploded View.
+    // -----------------------------------------------------------------------
+    const cutawayGroup = document.getElementById('cutaway-group');
+    const cutawayButtons = {};
+    API.CUTAWAY_MODES.forEach((mode) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'mini-btn';
+      b.textContent = API.CUTAWAY_LABELS[mode]; // exact labels from FEAT-002
+      b.addEventListener('click', () => {
+        API.setCutawayMode(mode);
+        refreshCutawayButtons();
+      });
+      cutawayGroup.appendChild(b);
+      cutawayButtons[mode] = b;
+    });
+    function refreshCutawayButtons() {
+      const active = API.getCutawayMode();
+      Object.keys(cutawayButtons).forEach((m) => {
+        cutawayButtons[m].classList.toggle('active', m === active);
+      });
+    }
+
+    // -----------------------------------------------------------------------
+    // Component visibility toggles (nine components).
+    // -----------------------------------------------------------------------
+    const VIS_LABELS = {
+      housing: 'Outer Housing',
+      armature: 'Armature',
+      commutator: 'Commutator',
+      carbonBrushes: 'Carbon Brushes',
+      stator: 'Stator',
+      coolingFan: 'Cooling Fan',
+      bevelGear: 'Bevel Gear',
+      spindle: 'Spindle',
+      grindingDisc: 'Grinding Disc'
+    };
+    const visibilityGroup = document.getElementById('visibility-group');
+    const visState = {};
+    Object.keys(VIS_LABELS).forEach((name) => {
+      visState[name] = true;
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'mini-btn on';
+      b.textContent = VIS_LABELS[name];
+      b.addEventListener('click', () => {
+        visState[name] = !visState[name];
+        API.setComponentVisible(name, visState[name]);
+        b.classList.toggle('on', visState[name]);
+      });
+      visibilityGroup.appendChild(b);
+      visState['_btn_' + name] = b;
+    });
+    // Keep the visibility button states in sync when stages change internals.
+    function syncVisibilityButtons() {
+      Object.keys(VIS_LABELS).forEach((name) => {
+        const grp = API.components.get((API.VISIBILITY_GROUPS[name] || [name])[0]);
+        const on = grp ? grp.visible : true;
+        visState[name] = on;
+        const b = visState['_btn_' + name];
+        if (b) b.classList.toggle('on', on);
+      });
+    }
+
+    // -----------------------------------------------------------------------
+    // Hide Overlay — hides ALL UI (header, panels, controls, labels, safe-zone)
+    // via CSS classes WITHOUT pausing requestAnimationFrame or the 3D animation.
+    // A small corner affordance (#restore-ui) always remains to bring it back.
+    // -----------------------------------------------------------------------
+    let uiHidden = false;
+    function setUiHidden(hide) {
+      uiHidden = !!hide;
+      uiLayer.classList.toggle('ui-hidden', uiHidden);       // header/panels/controls
+      overlay.classList.toggle('overlay-hidden', uiHidden);  // technical labels
+      API.setOverlayVisible(!uiHidden);                      // keep API state coherent
+      safeZone.classList.toggle('visible', !uiHidden && safeZoneOn); // hide guide too
+      restoreUI.classList.toggle('visible', uiHidden);
+    }
+    btnHideOverlay.addEventListener('click', () => setUiHidden(true));
+    restoreUI.addEventListener('click', () => setUiHidden(false));
+
+    // -----------------------------------------------------------------------
+    // Safe Zone guide — 100px inset boundary on all four sides.
+    // -----------------------------------------------------------------------
+    let safeZoneOn = false;
+    function toggleSafeZone() {
+      safeZoneOn = !safeZoneOn;
+      safeZone.classList.toggle('visible', safeZoneOn && !uiHidden);
+      btnSafeZone.classList.toggle('active', safeZoneOn);
+    }
+    btnSafeZone.addEventListener('click', toggleSafeZone);
+
+    // -----------------------------------------------------------------------
+    // Transport button wiring.
+    // -----------------------------------------------------------------------
+    btnPlay.addEventListener('click', togglePlay);
+    btnPrev.addEventListener('click', () => { prevStage(); });
+    btnNext.addEventListener('click', () => { nextStage(); });
+    btnRestart.addEventListener('click', restart);
+    btnSpeed.addEventListener('click', () => setSlowMotion(!slowMotion));
+
+    // -----------------------------------------------------------------------
+    // Auto-play driver. Uses its own rAF-independent timer fed by a lightweight
+    // interval; stage advance is scaled by the playback speed multiplier so
+    // Slow Motion stretches the storytelling too. This does NOT drive the 3D
+    // render loop (that is the untouched FEAT-002 animate()).
+    // -----------------------------------------------------------------------
+    let lastTick = performance.now();
+    function tick(now) {
+      const dt = Math.min((now - lastTick) / 1000, 0.1);
+      lastTick = now;
+      if (playing) {
+        stageTimer += dt * (slowMotion ? SLOW_SPEED : NORMAL_SPEED);
+        if (stageTimer >= STAGE_DURATION) {
+          stageTimer = 0;
+          if (stageIndex >= STAGE_COUNT - 1) {
+            applyStage(0); // loop the story
+          } else {
+            nextStage();
+          }
+        }
+      }
+      // Keep UI reflections fresh (cheap).
+      refreshCutawayButtons();
+      syncVisibilityButtons();
+      requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+
+    // -----------------------------------------------------------------------
+    // Init.
+    // -----------------------------------------------------------------------
+    setSlowMotion(false);
+    setPlaying(false);
+    applyStage(0);
+    refreshCutawayButtons();
+    syncVisibilityButtons();
+  })();
+  </script>
+</body>
+</html>
