@@ -985,10 +985,15 @@
   // (2) Camera controls: Reset Camera + Auto Rotate toggle.
   // ---------------------------------------------------------------------------
   function resetCamera() {
+    // Temporarily suspend damping so the reset snaps cleanly to the home view
+    // without a one-frame easing artifact, then restore the user's setting.
+    const prevDamping = controls.enableDamping;
+    controls.enableDamping = false;
     camera.position.copy(initialCamera.position);
     controls.target.copy(initialCamera.target);
     camera.lookAt(initialCamera.target);
     controls.update();
+    controls.enableDamping = prevDamping;
   }
   function setAutoRotate(on) { controls.autoRotate = !!on; return controls.autoRotate; }
   function toggleAutoRotate() { controls.autoRotate = !controls.autoRotate; return controls.autoRotate; }
@@ -1037,6 +1042,11 @@
 
   // Section cutaway uses a clipping plane on the housing materials so a
   // cross-section is revealed. Plane normal +Z, constant 0 clips the near half.
+  // NOTE: this is a deliberate world-space stylistic cut; the plane is fixed in
+  // world coordinates, so orbiting the camera changes which half is revealed
+  // rather than cutting along a model-relative axis. A model-relative section
+  // would require re-deriving the plane from the model transform each frame;
+  // the world-fixed cut is intentional here and kept simple.
   const sectionClipPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
   let sectionClipActive = false;
 
@@ -1076,7 +1086,9 @@
       m.clipShadows = sectionClipActive;
       m.needsUpdate = true;
     }
-    renderer.localClippingEnabled = sectionClipActive || renderer.localClippingEnabled;
+    // Track the section state directly so clipping is turned OFF again when any
+    // non-section mode is active (previously this latched on and never cleared).
+    renderer.localClippingEnabled = sectionClipActive;
   }
 
   function setCutawayMode(mode) {
@@ -1436,6 +1448,9 @@
     const { w, h } = stageSize();
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
+    // Re-apply the device pixel ratio so moving the window between displays of
+    // different DPR re-sharpens the canvas without a reload.
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(w, h, false);
   }
   window.addEventListener('resize', onResize);
@@ -1561,15 +1576,27 @@
     // 10-stage table. Each stage carries: a short title, the explanation copy
     // (with orange-highlighted key terms), and an apply() that drives the scene
     // via the FEAT-002 API. The five provided Tahap sentences are used verbatim
-    // for stages 1..5 (their key terms wrapped in <span class="hl">). Remaining
-    // stages use concise, consistent Indonesian copy.
+    // (their key terms wrapped in <span class="hl">), each bound to its intended
+    // conceptual stage in electrical-flow order. Remaining stages use concise,
+    // consistent Indonesian copy.
     // -----------------------------------------------------------------------
     // Each stage's `plain` string is the explanation shown to the user VERBATIM.
-    // Stages 1..5 use the five provided Tahap sentences exactly as specified (the
-    // mapping follows the spec's conceptual order: current -> brushes ->
-    // commutator -> armature -> torque -> bevel). `terms` lists the technical
-    // words to highlight in orange (#D96B27) at render time without altering the
-    // sentence text itself. The remaining stages use concise, consistent copy.
+    // The five provided Tahap sentences map to the stages that actually show the
+    // behaviour they describe, following the spec's conceptual order:
+    //   Tahap 1 "Arus listrik masuk melalui kabel menuju sikat karbon." -> stage 4
+    //           (arus mulai mengalir, RPM > 0 so current FX are on)
+    //   Tahap 2 "Sikat karbon menyalurkan arus ke komutator."           -> stage 5
+    //           (brush-contact, energized)
+    //   Tahap 3 "Arus mengalir melalui kumparan armature."              -> stage 6
+    //           (armature energized, FX on)
+    //   Tahap 4 "Interaksi medan magnet menghasilkan torsi yang memutar rotor."
+    //           -> stage 7 (stator field interacts with the armature, energized)
+    //   Tahap 5 "Putaran diteruskan melalui bevel gear menuju mata gerinda."
+    //           -> stage 9 (bevel transmits motion, energized)
+    // Stage 3 (reveal internals) deliberately carries its own non-current copy so
+    // the narration never claims current is flowing while the scene is at RPM 0.
+    // `terms` lists the technical words to highlight in orange (#D96B27) at render
+    // time without altering the sentence text itself.
     const STAGES = [
       {
         title: 'Mesin utuh',
@@ -1585,9 +1612,11 @@
       },
       {
         title: 'Komponen internal',
-        // Provided Tahap sentence (verbatim).
-        plain: 'Arus mengalir melalui kumparan armature.',
-        terms: ['kumparan armature'],
+        // Reveal-only stage: the internals are exposed while the motor is still
+        // de-energized (RPM 0). No current/flow sentence here; that would
+        // contradict the static scene. Current narration begins at stage 4.
+        plain: 'Komponen internal diperlihatkan: armature, komutator, sikat karbon, stator, hingga bevel gear.',
+        terms: ['armature', 'komutator', 'sikat karbon', 'stator', 'bevel gear'],
         apply() { API.setCutawayMode('transparent'); showInternals(true); API.setRPM(0); }
       },
       {
@@ -1606,15 +1635,19 @@
       },
       {
         title: 'Armature berputar',
-        // Provided Tahap sentence (verbatim).
-        plain: 'Interaksi medan magnet menghasilkan torsi yang memutar rotor.',
-        terms: ['medan magnet', 'torsi', 'rotor'],
+        // Provided Tahap sentence (verbatim). Energized: current now flows
+        // through the armature windings (RPM > 0 so the flow/glow FX are on).
+        plain: 'Arus mengalir melalui kumparan armature.',
+        terms: ['kumparan armature'],
         apply() { API.setCutawayMode('transparent'); showInternals(true); API.setRPM(4000); }
       },
       {
         title: 'Stator menghasilkan medan magnet',
-        plain: 'Kumparan stator menghasilkan medan magnet tetap yang mengelilingi armature.',
-        terms: ['stator', 'medan magnet'],
+        // Provided Tahap sentence (verbatim). The stator's magnetic field
+        // interacts with the energized armature to produce the torque that
+        // spins the rotor: energized stage (RPM > 0), FX on.
+        plain: 'Interaksi medan magnet menghasilkan torsi yang memutar rotor.',
+        terms: ['medan magnet', 'torsi', 'rotor'],
         apply() { API.setCutawayMode('transparent'); showInternals(true); API.setRPM(6000); }
       },
       {
