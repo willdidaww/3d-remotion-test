@@ -19,18 +19,57 @@
   </script>
 
   <style>
-    html, body { margin: 0; padding: 0; height: 100%; background: #F5F3EF; overflow: hidden; }
+    html, body {
+      margin: 0; padding: 0; height: 100%; overflow: hidden;
+      /* Soft studio backdrop behind the vertical stage on desktop. */
+      background: radial-gradient(circle at 50% 30%, #2a2f36 0%, #15181c 70%, #0d0f12 100%);
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+
+    /* ---------------------------------------------------------------------
+     * VERTICAL 9:16 STAGE (FEAT-003)
+     * Reference size 420 x 746 (9:16). Centered on desktop with rounded
+     * corners + soft shadow. On small screens it scales down to fit the
+     * viewport while preserving the 9:16 aspect ratio. The Three.js canvas,
+     * the label overlay, the clickable UI layer, and the safe-zone guide all
+     * live INSIDE this stage, so the renderer + label projection use the
+     * stage size (not the full window).
+     * ------------------------------------------------------------------- */
+    #stage-wrap {
+      position: fixed; inset: 0; display: flex;
+      align-items: center; justify-content: center;
+    }
+    #stage {
+      position: relative;
+      width: 420px; height: 746px;        /* reference 9:16 */
+      max-width: 100vw;
+      max-height: 100vh;
+      aspect-ratio: 9 / 16;
+      border-radius: 22px;
+      overflow: hidden;
+      background: #F5F3EF;
+      box-shadow: 0 30px 80px rgba(0,0,0,0.55), 0 6px 20px rgba(0,0,0,0.4);
+    }
+    /* Preserve aspect ratio when the viewport is too short for 420x746. */
+    @media (max-height: 780px), (max-width: 440px) {
+      #stage { width: auto; height: 100vh; }
+    }
+    @media (max-width: 440px) {
+      #stage { width: 100vw; height: auto; border-radius: 0; }
+    }
+
     #scene-canvas { display: block; width: 100%; height: 100%; }
-    #app { position: fixed; inset: 0; }
+    #app { position: absolute; inset: 0; }
 
     /* ---------------------------------------------------------------------
      * Overlay layer for HTML technical labels + leader lines (FEAT-002).
      * FEAT-003's "Hide Overlay" will toggle #overlay-layer visibility.
      * The layer is click-through (pointer-events:none) so OrbitControls keep
-     * receiving pointer input from the canvas underneath.
+     * receiving pointer input from the canvas underneath. Now scoped to the
+     * stage (absolute inset:0 within #stage).
      * ------------------------------------------------------------------- */
     #overlay-layer {
-      position: fixed; inset: 0; pointer-events: none; overflow: hidden; z-index: 10;
+      position: absolute; inset: 0; pointer-events: none; overflow: hidden; z-index: 10;
     }
     #overlay-layer.overlay-hidden { display: none; }
 
@@ -39,6 +78,177 @@
     #leader-svg line {
       stroke: #f6a623; stroke-width: 1.2; opacity: 0.85;
     }
+
+    /* ---------------------------------------------------------------------
+     * UI LAYER (FEAT-003). Separate from the labels overlay. Holds all the
+     * clickable storytelling + control UI. pointer-events is NONE on the layer
+     * itself (so empty regions pass pointer input through to OrbitControls on
+     * the canvas), but RE-ENABLED on each interactive panel/button.
+     * "Hide Overlay" toggles .ui-hidden on BOTH #overlay-layer and #ui-layer.
+     * ------------------------------------------------------------------- */
+    #ui-layer {
+      position: absolute; inset: 0; pointer-events: none; z-index: 20;
+      display: flex; flex-direction: column; justify-content: space-between;
+      font-size: 12px; color: #f3efe8;
+    }
+    #ui-layer.ui-hidden { display: none; }
+    #ui-layer .ui-panel { pointer-events: auto; }
+
+    /* Glass / dark semi-transparent panels with backdrop blur. */
+    .glass {
+      background: rgba(16, 18, 22, 0.62);
+      backdrop-filter: blur(9px);
+      -webkit-backdrop-filter: blur(9px);
+      border: 1px solid rgba(255,255,255,0.08);
+    }
+
+    /* Header (top-left). */
+    #header {
+      padding: 14px 16px; max-width: 78%;
+    }
+    #header .subtitle {
+      font-size: 10px; letter-spacing: 0.18em; font-weight: 600;
+      color: #2a2f36; text-transform: uppercase;
+      text-shadow: 0 1px 2px rgba(255,255,255,0.4);
+    }
+    #header .headline {
+      font-family: Georgia, "Times New Roman", serif;
+      font-weight: 800; font-size: 30px; line-height: 1.02;
+      color: #22262b; margin: 4px 0 8px;
+      text-shadow: 0 1px 0 rgba(255,255,255,0.35);
+    }
+    #header .headline .accent { color: #D96B27; }
+    #header .meta { display: flex; align-items: center; gap: 8px; }
+    #header .volt {
+      font-size: 11px; font-weight: 700; letter-spacing: 0.05em;
+      color: #2a2f36; background: rgba(255,255,255,0.55);
+      border-radius: 6px; padding: 2px 8px;
+    }
+    #header .rpm-badge {
+      font-size: 11px; font-weight: 800; letter-spacing: 0.03em;
+      color: #fff; background: #D96B27; border-radius: 999px;
+      padding: 3px 10px; box-shadow: 0 2px 8px rgba(217,107,39,0.5);
+    }
+
+    /* Dynamic explanation panel. */
+    #explain {
+      margin: 0 14px; padding: 12px 14px; border-radius: 14px;
+      color: #f1ece3; line-height: 1.45; font-size: 13px;
+      align-self: flex-start; max-width: calc(100% - 28px);
+    }
+    #explain .stage-tag {
+      display: inline-block; font-size: 10px; letter-spacing: 0.1em;
+      font-weight: 700; color: #ffcf9a; text-transform: uppercase;
+      margin-bottom: 5px;
+    }
+    #explain .hl { color: #D96B27; font-weight: 700; }
+    #explain b { color: #ffe3c6; }
+
+    /* Bottom control panel. */
+    #controls {
+      margin: 0; padding: 10px 12px 12px;
+      border-top: 1px solid rgba(255,255,255,0.08);
+      border-radius: 18px 18px 0 0;
+      display: flex; flex-direction: column; gap: 8px;
+    }
+    .ctl-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .ctl-btn {
+      pointer-events: auto; cursor: pointer; user-select: none;
+      background: rgba(255,255,255,0.10); color: #f3efe8;
+      border: 1px solid rgba(255,255,255,0.14); border-radius: 8px;
+      padding: 6px 10px; font-size: 11px; font-weight: 600;
+      transition: background 0.15s, border-color 0.15s, color 0.15s;
+      white-space: nowrap;
+    }
+    .ctl-btn:hover { background: rgba(255,255,255,0.18); }
+    .ctl-btn.active {
+      background: #D96B27; border-color: #D96B27; color: #fff;
+    }
+    .ctl-btn.wide { flex: 1; text-align: center; }
+    .ctl-icon { font-size: 13px; }
+
+    .progress-wrap { flex: 1; min-width: 120px; }
+    .progress-label { font-size: 10px; color: #cdc6ba; margin-bottom: 3px; letter-spacing: 0.04em; }
+    .progress-track {
+      height: 6px; border-radius: 999px; background: rgba(255,255,255,0.14);
+      overflow: hidden;
+    }
+    .progress-fill {
+      height: 100%; width: 10%; border-radius: 999px;
+      background: linear-gradient(90deg, #f6a623, #D96B27);
+      transition: width 0.35s ease;
+    }
+
+    /* RPM slider. */
+    .rpm-block { width: 100%; }
+    .rpm-top { display: flex; justify-content: space-between; align-items: baseline; }
+    .rpm-top .label { font-size: 10px; letter-spacing: 0.06em; color: #cdc6ba; }
+    .rpm-top .value { font-size: 12px; font-weight: 800; color: #ffcf9a; }
+    input[type="range"].rpm-slider {
+      -webkit-appearance: none; appearance: none; width: 100%; height: 5px;
+      border-radius: 999px; background: rgba(255,255,255,0.18);
+      outline: none; margin: 6px 0 0; pointer-events: auto; cursor: pointer;
+    }
+    input[type="range"].rpm-slider::-webkit-slider-thumb {
+      -webkit-appearance: none; appearance: none; width: 15px; height: 15px;
+      border-radius: 50%; background: #D96B27; border: 2px solid #fff;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.5);
+    }
+    input[type="range"].rpm-slider::-moz-range-thumb {
+      width: 15px; height: 15px; border-radius: 50%; background: #D96B27;
+      border: 2px solid #fff;
+    }
+    .rpm-ticks { display: flex; justify-content: space-between; margin-top: 2px; }
+    .rpm-ticks span { font-size: 8px; color: #8a8378; }
+
+    /* Collapsible advanced control groups (camera / visibility / cutaway). */
+    details.ctl-group {
+      pointer-events: auto; border-radius: 8px;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.08);
+    }
+    details.ctl-group > summary {
+      cursor: pointer; list-style: none; padding: 6px 10px;
+      font-size: 10px; font-weight: 700; letter-spacing: 0.08em;
+      text-transform: uppercase; color: #cdc6ba;
+    }
+    details.ctl-group > summary::-webkit-details-marker { display: none; }
+    details.ctl-group[open] > summary { color: #ffcf9a; }
+    .group-body { padding: 4px 8px 8px; display: flex; flex-wrap: wrap; gap: 5px; }
+    .mini-btn {
+      pointer-events: auto; cursor: pointer; user-select: none;
+      background: rgba(255,255,255,0.08); color: #e8e2d8;
+      border: 1px solid rgba(255,255,255,0.12); border-radius: 6px;
+      padding: 4px 7px; font-size: 10px; font-weight: 600;
+    }
+    .mini-btn:hover { background: rgba(255,255,255,0.16); }
+    .mini-btn.active { background: #D96B27; border-color: #D96B27; color: #fff; }
+    .mini-btn.on { background: rgba(217,107,39,0.35); border-color: #D96B27; color: #ffdfc4; }
+
+    /* Safe-zone guide: 100px inset boundary on all four sides. */
+    #safe-zone {
+      position: absolute; inset: 100px; z-index: 15; pointer-events: none;
+      border: 1.5px dashed rgba(217,107,39,0.85);
+      border-radius: 4px; display: none;
+    }
+    #safe-zone.visible { display: block; }
+    #safe-zone::after {
+      content: "SAFE ZONE 100px";
+      position: absolute; top: 4px; left: 6px;
+      font-size: 9px; letter-spacing: 0.1em; font-weight: 700;
+      color: rgba(217,107,39,0.95); font-family: monospace;
+    }
+
+    /* Always-reachable restore affordance shown while the UI is hidden. */
+    #restore-ui {
+      position: absolute; top: 8px; right: 8px; z-index: 40;
+      display: none; pointer-events: auto; cursor: pointer;
+      background: rgba(16,18,22,0.7); color: #ffcf9a;
+      border: 1px solid #D96B27; border-radius: 999px;
+      padding: 5px 10px; font-size: 10px; font-weight: 700;
+      backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+    }
+    #restore-ui.visible { display: block; }
 
     /* Floating technical badges: monospace, dark transparent bg, thin
        yellow/orange border. Positioned absolutely each frame via JS. */
@@ -72,14 +282,106 @@
   </style>
 </head>
 <body>
-  <div id="app">
-    <canvas id="scene-canvas"></canvas>
-  </div>
+  <!-- Vertical 9:16 stage. Everything (canvas, labels, UI, safe-zone) lives inside. -->
+  <div id="stage-wrap">
+    <div id="stage">
+      <div id="app">
+        <canvas id="scene-canvas"></canvas>
+      </div>
 
-  <!-- Overlay layer for technical labels + leader lines (FEAT-002).
-       FEAT-003 will toggle this via the "Hide Overlay" control. -->
-  <div id="overlay-layer">
-    <svg id="leader-svg" xmlns="http://www.w3.org/2000/svg"></svg>
+      <!-- Overlay layer for technical labels + leader lines (FEAT-002).
+           FEAT-003 toggles this with #ui-layer via "Hide Overlay". -->
+      <div id="overlay-layer">
+        <svg id="leader-svg" xmlns="http://www.w3.org/2000/svg"></svg>
+      </div>
+
+      <!-- Safe-zone guide: 100px inset boundary (Reels/Shorts/TikTok). -->
+      <div id="safe-zone"></div>
+
+      <!-- Always-reachable restore affordance while the UI is hidden. -->
+      <button id="restore-ui" type="button" title="Tampilkan UI">&#9680; Tampilkan UI</button>
+
+      <!-- Clickable storytelling + control UI (FEAT-003). -->
+      <div id="ui-layer">
+
+        <!-- HEADER (top-left) -->
+        <div id="header" class="ui-panel">
+          <div class="subtitle">DALAM BODI — MOTOR UNIVERSAL</div>
+          <div class="headline">listrik jadi<br><span class="accent">putaran</span></div>
+          <div class="meta">
+            <span class="volt">220V AC</span>
+            <span class="rpm-badge">~11.000 RPM</span>
+          </div>
+        </div>
+
+        <!-- DYNAMIC EXPLANATION PANEL -->
+        <div id="explain" class="glass ui-panel">
+          <span class="stage-tag" id="explain-tag">Tahap 1/10</span>
+          <div id="explain-text">&nbsp;</div>
+        </div>
+
+        <!-- BOTTOM CONTROL PANEL -->
+        <div id="controls" class="glass ui-panel">
+
+          <!-- Playback transport + progress -->
+          <div class="ctl-row">
+            <button class="ctl-btn" id="btn-restart" type="button" title="Mulai ulang"><span class="ctl-icon">&#8635;</span></button>
+            <button class="ctl-btn" id="btn-prev" type="button" title="Tahap sebelumnya">&#9664;</button>
+            <button class="ctl-btn" id="btn-play" type="button" title="Play / Pause"><span class="ctl-icon">&#9654;</span> Play</button>
+            <button class="ctl-btn" id="btn-next" type="button" title="Tahap berikutnya">&#9654;</button>
+            <button class="ctl-btn" id="btn-speed" type="button" title="Slow Motion / Normal Speed">Slow Motion</button>
+          </div>
+
+          <!-- Animation progress -->
+          <div class="ctl-row">
+            <div class="progress-wrap">
+              <div class="progress-label" id="progress-label">Tahap 1/10 &mdash; Mesin utuh</div>
+              <div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
+            </div>
+          </div>
+
+          <!-- RPM slider with discrete stops + live readout -->
+          <div class="rpm-block">
+            <div class="rpm-top">
+              <span class="label">RPM</span>
+              <span class="value" id="rpm-value">0 RPM</span>
+            </div>
+            <input type="range" class="rpm-slider" id="rpm-slider" min="0" max="5" step="1" value="0" />
+            <div class="rpm-ticks">
+              <span>0</span><span>2k</span><span>4k</span><span>6k</span><span>8k</span><span>11k</span>
+            </div>
+          </div>
+
+          <!-- Camera controls -->
+          <details class="ctl-group">
+            <summary>Kamera</summary>
+            <div class="group-body">
+              <button class="mini-btn" id="btn-reset-cam" type="button">Reset Camera</button>
+              <button class="mini-btn" id="btn-autorotate" type="button">Auto Rotate</button>
+            </div>
+          </details>
+
+          <!-- Cutaway modes (exactly four) -->
+          <details class="ctl-group">
+            <summary>Cutaway</summary>
+            <div class="group-body" id="cutaway-group"></div>
+          </details>
+
+          <!-- Component visibility (nine toggles) -->
+          <details class="ctl-group">
+            <summary>Visibilitas Komponen</summary>
+            <div class="group-body" id="visibility-group"></div>
+          </details>
+
+          <!-- Composition helpers -->
+          <div class="ctl-row">
+            <button class="ctl-btn wide" id="btn-safezone" type="button">Safe Zone</button>
+            <button class="ctl-btn wide" id="btn-hide-overlay" type="button">Hide Overlay</button>
+          </div>
+        </div>
+
+      </div>
+    </div>
   </div>
 
   <script type="module">
@@ -136,9 +438,18 @@
   // Renderer: antialiased, ACES tone mapping, sRGB output, soft shadows.
   // ---------------------------------------------------------------------------
   const canvas = document.getElementById('scene-canvas');
+  // The renderer fills the vertical 9:16 stage, NOT the whole window. All sizing
+  // reads the stage element's client box so canvas, camera and label projection
+  // stay in sync (see onResize + updateLabels).
+  const stageEl = document.getElementById('stage');
+  function stageSize() {
+    const r = stageEl.getBoundingClientRect();
+    return { w: Math.max(1, Math.round(r.width)), h: Math.max(1, Math.round(r.height)) };
+  }
+  const _stage0 = stageSize();
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setSize(_stage0.w, _stage0.h);
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.05;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -154,7 +465,7 @@
   // ---------------------------------------------------------------------------
   // Camera at a 3/4 isometric-ish angle.
   // ---------------------------------------------------------------------------
-  const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 100);
+  const camera = new THREE.PerspectiveCamera(42, _stage0.w / _stage0.h, 0.1, 100);
   const INITIAL_CAMERA_POSITION = new THREE.Vector3(7.5, 5.2, 8.5);
   const INITIAL_CAMERA_TARGET = new THREE.Vector3(0, 0.2, 0);
   camera.position.copy(INITIAL_CAMERA_POSITION);
@@ -1054,8 +1365,9 @@
   const _labelProj = new THREE.Vector3();
 
   function updateLabels() {
-    const w = window.innerWidth;
-    const h = window.innerHeight;
+    const _ls = stageSize();
+    const w = _ls.w;
+    const h = _ls.h;
     // First pass: project anchors and compute desired badge screen positions.
     for (const L of labelObjects) {
       _labelProj.copy(L.def.anchor);
@@ -1119,13 +1431,15 @@
   const clock = new THREE.Clock();
 
   function onResize() {
-    const w = window.innerWidth;
-    const h = window.innerHeight;
+    // Size the renderer + camera to the vertical stage box (not the window),
+    // so the canvas, label projection and 9:16 framing stay consistent.
+    const { w, h } = stageSize();
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
-    renderer.setSize(w, h);
+    renderer.setSize(w, h, false);
   }
   window.addEventListener('resize', onResize);
+  onResize();
 
   function animate() {
     requestAnimationFrame(animate);
@@ -1226,6 +1540,395 @@
     updateLabels,
     labelObjects
   };
+
+  /* ===========================================================================
+   * FEAT-003 — VERTICAL 9:16 UI/UX + 10-STAGE STORYTELLING STATE MACHINE
+   * ---------------------------------------------------------------------------
+   * Built entirely on top of the FEAT-002 API exposed above (window.APP). This
+   * does NOT touch the 3D scene construction; it only drives it via the public
+   * functions (setCutawayMode, setComponentVisible, setRPM, setPlaybackSpeed,
+   * resetCamera, setAutoRotate, setOverlayVisible).
+   *
+   * Clickable UI lives in #ui-layer (pointer-events re-enabled per panel) so
+   * OrbitControls keep working through the empty regions. "Hide Overlay" hides
+   * BOTH the labels (#overlay-layer) and the UI (#ui-layer) WITHOUT cancelling
+   * requestAnimationFrame — the 3D animation keeps running.
+   * ========================================================================= */
+  (function FEAT003_UI() {
+    const API = window.APP;
+
+    // -----------------------------------------------------------------------
+    // 10-stage table. Each stage carries: a short title, the explanation copy
+    // (with orange-highlighted key terms), and an apply() that drives the scene
+    // via the FEAT-002 API. The five provided Tahap sentences are used verbatim
+    // for stages 1..5 (their key terms wrapped in <span class="hl">). Remaining
+    // stages use concise, consistent Indonesian copy.
+    // -----------------------------------------------------------------------
+    // Each stage's `plain` string is the explanation shown to the user VERBATIM.
+    // Stages 1..5 use the five provided Tahap sentences exactly as specified (the
+    // mapping follows the spec's conceptual order: current -> brushes ->
+    // commutator -> armature -> torque -> bevel). `terms` lists the technical
+    // words to highlight in orange (#D96B27) at render time without altering the
+    // sentence text itself. The remaining stages use concise, consistent copy.
+    const STAGES = [
+      {
+        title: 'Mesin utuh',
+        plain: 'Mesin gerinda dalam kondisi utuh. Bodi tertutup rapat, siap kita bedah lapis demi lapis.',
+        terms: ['utuh'],
+        apply() { API.setCutawayMode('full'); showInternals(false); API.setRPM(0); }
+      },
+      {
+        title: 'Casing transparan',
+        plain: 'Casing dibuat transparan agar kita bisa mengintip komponen di dalam bodi motor universal.',
+        terms: ['transparan'],
+        apply() { API.setCutawayMode('transparent'); showInternals(false); API.setRPM(0); }
+      },
+      {
+        title: 'Komponen internal',
+        // Provided Tahap sentence (verbatim).
+        plain: 'Arus mengalir melalui kumparan armature.',
+        terms: ['kumparan armature'],
+        apply() { API.setCutawayMode('transparent'); showInternals(true); API.setRPM(0); }
+      },
+      {
+        title: 'Arus listrik mengalir',
+        // Provided Tahap sentence (verbatim).
+        plain: 'Arus listrik masuk melalui kabel menuju sikat karbon.',
+        terms: ['kabel', 'sikat karbon'],
+        apply() { API.setCutawayMode('transparent'); showInternals(true); API.setRPM(2000); }
+      },
+      {
+        title: 'Sikat karbon menyentuh komutator',
+        // Provided Tahap sentence (verbatim).
+        plain: 'Sikat karbon menyalurkan arus ke komutator.',
+        terms: ['Sikat karbon', 'komutator'],
+        apply() { API.setCutawayMode('transparent'); showInternals(true); API.setRPM(2000); }
+      },
+      {
+        title: 'Armature berputar',
+        // Provided Tahap sentence (verbatim).
+        plain: 'Interaksi medan magnet menghasilkan torsi yang memutar rotor.',
+        terms: ['medan magnet', 'torsi', 'rotor'],
+        apply() { API.setCutawayMode('transparent'); showInternals(true); API.setRPM(4000); }
+      },
+      {
+        title: 'Stator menghasilkan medan magnet',
+        plain: 'Kumparan stator menghasilkan medan magnet tetap yang mengelilingi armature.',
+        terms: ['stator', 'medan magnet'],
+        apply() { API.setCutawayMode('transparent'); showInternals(true); API.setRPM(6000); }
+      },
+      {
+        title: 'Cooling fan berputar',
+        plain: 'Kipas pendingin ikut berputar, mengalirkan udara untuk menjaga suhu motor tetap aman.',
+        terms: ['Kipas pendingin', 'udara'],
+        apply() { API.setCutawayMode('transparent'); showInternals(true); API.setRPM(8000); }
+      },
+      {
+        title: 'Bevel gear meneruskan putaran',
+        // Provided Tahap sentence (verbatim).
+        plain: 'Putaran diteruskan melalui bevel gear menuju mata gerinda.',
+        terms: ['bevel gear', 'mata gerinda'],
+        apply() { API.setCutawayMode('transparent'); showInternals(true); API.setRPM(8000); }
+      },
+      {
+        title: 'Grinding disc berputar',
+        plain: 'Mata gerinda berputar penuh pada ~11.000 RPM, siap memotong dan mengasah.',
+        terms: ['Mata gerinda', '~11.000 RPM'],
+        apply() { API.setCutawayMode('full'); showInternals(true); API.setRPM(11000); }
+      }
+    ];
+    const STAGE_COUNT = STAGES.length; // 10
+
+    // Escape HTML, then wrap any configured technical terms in an orange
+    // highlight span. The visible text remains the verbatim sentence.
+    function escapeHtml(s) {
+      return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+    function renderExplanation(st) {
+      let html = escapeHtml(st.plain);
+      (st.terms || []).forEach((term) => {
+        const esc = escapeHtml(term);
+        // Replace the first literal occurrence only, preserving sentence text.
+        const needle = esc.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        html = html.replace(new RegExp(needle), '<span class="hl">' + esc + '</span>');
+      });
+      return html;
+    }
+
+    // Convenience: toggle every internal component's visibility together. The
+    // housing is always kept visible so cutaway modes govern its transparency.
+    function showInternals(on) {
+      ['armature','commutator','carbonBrushes','stator','coolingFan','bevelGear','spindle','grindingDisc']
+        .forEach((name) => API.setComponentVisible(name, !!on));
+      API.setComponentVisible('housing', true);
+    }
+
+    // Active-component highlight per stage: which label(s) to emphasise.
+    const STAGE_FOCUS = [
+      [], ['housing'], ['armature'], ['carbonBrushes'], ['commutator'],
+      ['armature'], ['stator'], ['coolingFan'], ['bevelGear'], ['grindingDisc']
+    ];
+
+    // -----------------------------------------------------------------------
+    // State machine state.
+    // -----------------------------------------------------------------------
+    let stageIndex = 0;        // 0-based (Tahap 1 == index 0)
+    let playing = false;       // auto-play transport
+    let slowMotion = false;    // Slow Motion vs Normal Speed
+    const NORMAL_SPEED = 1.0;
+    const SLOW_SPEED = 0.3;
+    const STAGE_DURATION = 5.0; // seconds per stage at normal speed (auto-play)
+    let stageTimer = 0;
+
+    // -----------------------------------------------------------------------
+    // DOM references.
+    // -----------------------------------------------------------------------
+    const uiLayer   = document.getElementById('ui-layer');
+    const overlay   = document.getElementById('overlay-layer');
+    const safeZone  = document.getElementById('safe-zone');
+    const restoreUI = document.getElementById('restore-ui');
+
+    const explainTag  = document.getElementById('explain-tag');
+    const explainText = document.getElementById('explain-text');
+    const progressLabel = document.getElementById('progress-label');
+    const progressFill  = document.getElementById('progress-fill');
+
+    const btnPlay    = document.getElementById('btn-play');
+    const btnPrev    = document.getElementById('btn-prev');
+    const btnNext    = document.getElementById('btn-next');
+    const btnRestart = document.getElementById('btn-restart');
+    const btnSpeed   = document.getElementById('btn-speed');
+
+    const rpmSlider = document.getElementById('rpm-slider');
+    const rpmValue  = document.getElementById('rpm-value');
+
+    const btnResetCam   = document.getElementById('btn-reset-cam');
+    const btnAutoRotate = document.getElementById('btn-autorotate');
+    const btnSafeZone   = document.getElementById('btn-safezone');
+    const btnHideOverlay= document.getElementById('btn-hide-overlay');
+
+    // -----------------------------------------------------------------------
+    // Apply a stage: drive the scene, update explanation + progress + highlight.
+    // -----------------------------------------------------------------------
+    function applyStage(i) {
+      stageIndex = Math.max(0, Math.min(STAGE_COUNT - 1, i));
+      const st = STAGES[stageIndex];
+      st.apply();
+      stageTimer = 0;
+
+      const n = stageIndex + 1;
+      explainTag.textContent = 'Tahap ' + n + '/' + STAGE_COUNT;
+      explainText.innerHTML = renderExplanation(st);
+      progressLabel.innerHTML = 'Tahap ' + n + '/' + STAGE_COUNT + ' &mdash; ' + st.title;
+      progressFill.style.width = (n / STAGE_COUNT * 100) + '%';
+
+      // Active-component label highlight.
+      const focus = STAGE_FOCUS[stageIndex] || [];
+      (API.labelObjects || []).forEach((L) => {
+        const key = L.def.key;
+        const hot = focus.indexOf(key) !== -1;
+        L.el.style.borderColor = hot ? '#D96B27' : '';
+        L.el.style.boxShadow = hot ? '0 0 12px rgba(217,107,39,0.8)' : '';
+        L.el.style.color = hot ? '#fff' : '';
+      });
+
+      // Keep the RPM slider + readout in sync with the stage.
+      syncRpmUiFromScene();
+    }
+
+    function nextStage() { applyStage((stageIndex + 1) % STAGE_COUNT); }
+    function prevStage() { applyStage((stageIndex - 1 + STAGE_COUNT) % STAGE_COUNT); }
+    function restart() { setPlaying(false); applyStage(0); }
+
+    // -----------------------------------------------------------------------
+    // Transport.
+    // -----------------------------------------------------------------------
+    function setPlaying(on) {
+      playing = !!on;
+      btnPlay.innerHTML = playing ? '<span class="ctl-icon">&#10073;&#10073;</span> Pause'
+                                  : '<span class="ctl-icon">&#9654;</span> Play';
+      btnPlay.classList.toggle('active', playing);
+    }
+    function togglePlay() { setPlaying(!playing); }
+
+    function setSlowMotion(on) {
+      slowMotion = !!on;
+      API.setPlaybackSpeed(slowMotion ? SLOW_SPEED : NORMAL_SPEED);
+      btnSpeed.textContent = slowMotion ? 'Normal Speed' : 'Slow Motion';
+      btnSpeed.classList.toggle('active', slowMotion);
+    }
+
+    // -----------------------------------------------------------------------
+    // RPM slider — discrete stops 0/2000/4000/6000/8000/11000.
+    // The slider index (0..5) maps to API.RPM_STEPS.
+    // -----------------------------------------------------------------------
+    const RPM_STEPS = API.RPM_STEPS; // [0,2000,4000,6000,8000,11000]
+    function rpmStepLabel(rpm) {
+      return rpm === 0 ? '0 RPM' : rpm.toLocaleString('id-ID') + ' RPM';
+    }
+    function syncRpmUiFromScene() {
+      const rpm = API.getRPM();
+      let idx = RPM_STEPS.indexOf(rpm);
+      if (idx < 0) idx = 0;
+      rpmSlider.value = String(idx);
+      rpmValue.textContent = rpmStepLabel(rpm);
+    }
+    rpmSlider.addEventListener('input', () => {
+      const idx = Math.max(0, Math.min(RPM_STEPS.length - 1, parseInt(rpmSlider.value, 10) || 0));
+      const rpm = RPM_STEPS[idx];
+      API.setRPM(rpm);
+      rpmValue.textContent = rpmStepLabel(API.getRPM());
+    });
+
+    // -----------------------------------------------------------------------
+    // Camera controls.
+    // -----------------------------------------------------------------------
+    btnResetCam.addEventListener('click', () => API.resetCamera());
+    btnAutoRotate.addEventListener('click', () => {
+      const on = API.toggleAutoRotate();
+      btnAutoRotate.classList.toggle('on', on);
+    });
+
+    // -----------------------------------------------------------------------
+    // Cutaway mode buttons (exactly four) — Full Body / Transparent Housing /
+    // Section Cutaway / Exploded View.
+    // -----------------------------------------------------------------------
+    const cutawayGroup = document.getElementById('cutaway-group');
+    const cutawayButtons = {};
+    API.CUTAWAY_MODES.forEach((mode) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'mini-btn';
+      b.textContent = API.CUTAWAY_LABELS[mode]; // exact labels from FEAT-002
+      b.addEventListener('click', () => {
+        API.setCutawayMode(mode);
+        refreshCutawayButtons();
+      });
+      cutawayGroup.appendChild(b);
+      cutawayButtons[mode] = b;
+    });
+    function refreshCutawayButtons() {
+      const active = API.getCutawayMode();
+      Object.keys(cutawayButtons).forEach((m) => {
+        cutawayButtons[m].classList.toggle('active', m === active);
+      });
+    }
+
+    // -----------------------------------------------------------------------
+    // Component visibility toggles (nine components).
+    // -----------------------------------------------------------------------
+    const VIS_LABELS = {
+      housing: 'Outer Housing',
+      armature: 'Armature',
+      commutator: 'Commutator',
+      carbonBrushes: 'Carbon Brushes',
+      stator: 'Stator',
+      coolingFan: 'Cooling Fan',
+      bevelGear: 'Bevel Gear',
+      spindle: 'Spindle',
+      grindingDisc: 'Grinding Disc'
+    };
+    const visibilityGroup = document.getElementById('visibility-group');
+    const visState = {};
+    Object.keys(VIS_LABELS).forEach((name) => {
+      visState[name] = true;
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'mini-btn on';
+      b.textContent = VIS_LABELS[name];
+      b.addEventListener('click', () => {
+        visState[name] = !visState[name];
+        API.setComponentVisible(name, visState[name]);
+        b.classList.toggle('on', visState[name]);
+      });
+      visibilityGroup.appendChild(b);
+      visState['_btn_' + name] = b;
+    });
+    // Keep the visibility button states in sync when stages change internals.
+    function syncVisibilityButtons() {
+      Object.keys(VIS_LABELS).forEach((name) => {
+        const grp = API.components.get((API.VISIBILITY_GROUPS[name] || [name])[0]);
+        const on = grp ? grp.visible : true;
+        visState[name] = on;
+        const b = visState['_btn_' + name];
+        if (b) b.classList.toggle('on', on);
+      });
+    }
+
+    // -----------------------------------------------------------------------
+    // Hide Overlay — hides ALL UI (header, panels, controls, labels, safe-zone)
+    // via CSS classes WITHOUT pausing requestAnimationFrame or the 3D animation.
+    // A small corner affordance (#restore-ui) always remains to bring it back.
+    // -----------------------------------------------------------------------
+    let uiHidden = false;
+    function setUiHidden(hide) {
+      uiHidden = !!hide;
+      uiLayer.classList.toggle('ui-hidden', uiHidden);       // header/panels/controls
+      overlay.classList.toggle('overlay-hidden', uiHidden);  // technical labels
+      API.setOverlayVisible(!uiHidden);                      // keep API state coherent
+      safeZone.classList.toggle('visible', !uiHidden && safeZoneOn); // hide guide too
+      restoreUI.classList.toggle('visible', uiHidden);
+    }
+    btnHideOverlay.addEventListener('click', () => setUiHidden(true));
+    restoreUI.addEventListener('click', () => setUiHidden(false));
+
+    // -----------------------------------------------------------------------
+    // Safe Zone guide — 100px inset boundary on all four sides.
+    // -----------------------------------------------------------------------
+    let safeZoneOn = false;
+    function toggleSafeZone() {
+      safeZoneOn = !safeZoneOn;
+      safeZone.classList.toggle('visible', safeZoneOn && !uiHidden);
+      btnSafeZone.classList.toggle('active', safeZoneOn);
+    }
+    btnSafeZone.addEventListener('click', toggleSafeZone);
+
+    // -----------------------------------------------------------------------
+    // Transport button wiring.
+    // -----------------------------------------------------------------------
+    btnPlay.addEventListener('click', togglePlay);
+    btnPrev.addEventListener('click', () => { prevStage(); });
+    btnNext.addEventListener('click', () => { nextStage(); });
+    btnRestart.addEventListener('click', restart);
+    btnSpeed.addEventListener('click', () => setSlowMotion(!slowMotion));
+
+    // -----------------------------------------------------------------------
+    // Auto-play driver. Uses its own rAF-independent timer fed by a lightweight
+    // interval; stage advance is scaled by the playback speed multiplier so
+    // Slow Motion stretches the storytelling too. This does NOT drive the 3D
+    // render loop (that is the untouched FEAT-002 animate()).
+    // -----------------------------------------------------------------------
+    let lastTick = performance.now();
+    function tick(now) {
+      const dt = Math.min((now - lastTick) / 1000, 0.1);
+      lastTick = now;
+      if (playing) {
+        stageTimer += dt * (slowMotion ? SLOW_SPEED : NORMAL_SPEED);
+        if (stageTimer >= STAGE_DURATION) {
+          stageTimer = 0;
+          if (stageIndex >= STAGE_COUNT - 1) {
+            applyStage(0); // loop the story
+          } else {
+            nextStage();
+          }
+        }
+      }
+      // Keep UI reflections fresh (cheap).
+      refreshCutawayButtons();
+      syncVisibilityButtons();
+      requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+
+    // -----------------------------------------------------------------------
+    // Init.
+    // -----------------------------------------------------------------------
+    setSlowMotion(false);
+    setPlaying(false);
+    applyStage(0);
+    refreshCutawayButtons();
+    syncVisibilityButtons();
+  })();
   </script>
 </body>
 </html>
