@@ -1,0 +1,604 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Visualisasi 3D Mekanisme Internal Mesin Gerinda Tangan</title>
+
+  <!-- Tailwind CSS via official CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- Three.js ES module importmap. Core and addon versions MUST be identical (0.169.0). -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.169.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.169.0/examples/jsm/"
+    }
+  }
+  </script>
+
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; background: #F5F3EF; overflow: hidden; }
+    #scene-canvas { display: block; width: 100%; height: 100%; }
+    #app { position: fixed; inset: 0; }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <canvas id="scene-canvas"></canvas>
+  </div>
+
+  <script type="module">
+  /* =============================================================================
+   * DEV NOTE — Central objects & hook points for later features (FEAT-002/FEAT-003)
+   * -----------------------------------------------------------------------------
+   * This module builds the FOUNDATION only: scene, renderer, lighting, camera +
+   * OrbitControls, and all eight procedurally-built mechanical component groups
+   * assembled with the correct parent-child transform hierarchy.
+   *
+   * Central objects exported onto `window.APP` so later features hook in cleanly:
+   *   APP.scene            : THREE.Scene
+   *   APP.camera           : THREE.PerspectiveCamera (3/4 isometric-ish framing)
+   *   APP.renderer         : THREE.WebGLRenderer (ACES + sRGB + PCFSoftShadowMap)
+   *   APP.controls         : OrbitControls (damping, pan, zoom, autoRotate wiring)
+   *   APP.components        : Map<string, THREE.Group>  central component registry
+   *   APP.rotorGroup       : spins on the MOTOR axis (armature+commutator+fan+pinion)
+   *   APP.statorGroup      : FIXED (stator pole pieces + carbon brushes) — no spin
+   *   APP.spindleGroup     : spins on the PERPENDICULAR output axis (crown+spindle+disc)
+   *   APP.homeTransforms   : Map<string,{position,quaternion,scale}> neutral/home
+   *                          transforms for every registered component. Used by the
+   *                          later Exploded View (FEAT-002) to offset along an
+   *                          assembly axis and restore. Each group ALSO carries its
+   *                          own home transform in userData.home for convenience.
+   *   APP.initialCamera    : { position:Vector3, target:Vector3 } for Reset Camera.
+   *   APP.materials        : shared MeshStandardMaterial registry.
+   *
+   * Transform / motion grouping (the highest-risk part — see FEAT-001):
+   *   - rotorGroup rotates about its local Z (the motor shaft runs along world X,
+   *     rotorGroup is oriented so its local Z == motor axis). Spin wiring is added
+   *     in FEAT-002 (RPM slider); FEAT-001 only establishes the pivots.
+   *   - statorGroup never rotates; it surrounds the rotor and holds the brushes.
+   *   - spindleGroup sits at the gearbox head on a PERPENDICULAR axis (world Y).
+   *     The pinion (child of rotorGroup) meets the crown bevel gear (child of
+   *     spindleGroup) at the gearbox head, transferring motion and changing the
+   *     rotation axis from the motor axis to the spindle axis.
+   *
+   * NOT implemented here (later features): RPM control, cutaway/transparency,
+   * exploded animation, electrical-flow / magnetic-field FX, HTML labels,
+   * particles, the vertical 9:16 UI, and the 10-stage state machine.
+   * ========================================================================== */
+
+  import * as THREE from 'three';
+  import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+  // ---------------------------------------------------------------------------
+  // Central registries exposed for later features.
+  // ---------------------------------------------------------------------------
+  const components = new Map();      // name -> THREE.Group
+  const homeTransforms = new Map();  // name -> { position, quaternion, scale }
+  const materials = {};              // shared MeshStandardMaterial registry
+
+  // ---------------------------------------------------------------------------
+  // Renderer: antialiased, ACES tone mapping, sRGB output, soft shadows.
+  // ---------------------------------------------------------------------------
+  const canvas = document.getElementById('scene-canvas');
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.05;
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+  // ---------------------------------------------------------------------------
+  // Scene with warm cream background.
+  // ---------------------------------------------------------------------------
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color('#F5F3EF');
+
+  // ---------------------------------------------------------------------------
+  // Camera at a 3/4 isometric-ish angle.
+  // ---------------------------------------------------------------------------
+  const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 100);
+  const INITIAL_CAMERA_POSITION = new THREE.Vector3(7.5, 5.2, 8.5);
+  const INITIAL_CAMERA_TARGET = new THREE.Vector3(0, 0.2, 0);
+  camera.position.copy(INITIAL_CAMERA_POSITION);
+  camera.lookAt(INITIAL_CAMERA_TARGET);
+
+  // ---------------------------------------------------------------------------
+  // OrbitControls: damping, pan, zoom. Store initial state for a later Reset.
+  // autoRotate is wired here but left off; FEAT-002 adds the toggle.
+  // ---------------------------------------------------------------------------
+  const controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
+  controls.enablePan = true;
+  controls.enableZoom = true;
+  controls.minDistance = 3;
+  controls.maxDistance = 30;
+  controls.autoRotate = false;
+  controls.autoRotateSpeed = 1.0;
+  controls.target.copy(INITIAL_CAMERA_TARGET);
+  controls.update();
+
+  const initialCamera = {
+    position: INITIAL_CAMERA_POSITION.clone(),
+    target: INITIAL_CAMERA_TARGET.clone()
+  };
+
+  // ---------------------------------------------------------------------------
+  // Studio lighting: hemisphere/ambient fill, soft key directional with shadows,
+  // and two rim/fill lights. Plus a shadow-catching ground in the cream tone.
+  // ---------------------------------------------------------------------------
+  const hemiLight = new THREE.HemisphereLight(0xffffff, 0xcdc6ba, 0.55);
+  scene.add(hemiLight);
+
+  const ambient = new THREE.AmbientLight(0xffffff, 0.25);
+  scene.add(ambient);
+
+  const keyLight = new THREE.DirectionalLight(0xffffff, 2.2);
+  keyLight.position.set(6, 10, 6);
+  keyLight.castShadow = true;
+  keyLight.shadow.mapSize.set(2048, 2048);
+  keyLight.shadow.camera.near = 0.5;
+  keyLight.shadow.camera.far = 40;
+  keyLight.shadow.camera.left = -12;
+  keyLight.shadow.camera.right = 12;
+  keyLight.shadow.camera.top = 12;
+  keyLight.shadow.camera.bottom = -12;
+  keyLight.shadow.bias = -0.0004;
+  keyLight.shadow.normalBias = 0.02;
+  keyLight.shadow.radius = 4;
+  scene.add(keyLight);
+
+  const rimLight = new THREE.DirectionalLight(0xfff0e0, 0.8);
+  rimLight.position.set(-8, 6, -6);
+  scene.add(rimLight);
+
+  const fillLight = new THREE.DirectionalLight(0xdfe6ff, 0.5);
+  fillLight.position.set(-4, 3, 8);
+  scene.add(fillLight);
+
+  // Shadow-catching ground plane in cream tone.
+  const groundMat = new THREE.MeshStandardMaterial({ color: 0xece8e0, roughness: 0.95, metalness: 0.0 });
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(60, 60), groundMat);
+  ground.rotation.x = -Math.PI / 2;
+  ground.position.y = -2.4;
+  ground.receiveShadow = true;
+  scene.add(ground);
+
+  // ---------------------------------------------------------------------------
+  // Shared materials (MeshStandardMaterial with metalness/roughness).
+  // Housing is transparency-capable so FEAT-002 cutaway can fade it.
+  // ---------------------------------------------------------------------------
+  materials.housing = new THREE.MeshStandardMaterial({
+    color: 0x3a3f45, metalness: 0.35, roughness: 0.55, transparent: true, opacity: 1.0
+  });
+  materials.housingAccent = new THREE.MeshStandardMaterial({
+    color: 0x24282c, metalness: 0.4, roughness: 0.5, transparent: true, opacity: 1.0
+  });
+  materials.steel = new THREE.MeshStandardMaterial({ color: 0xbfc4ca, metalness: 0.95, roughness: 0.3 });
+  materials.ironLam = new THREE.MeshStandardMaterial({ color: 0x4a4d52, metalness: 0.8, roughness: 0.55 });
+  materials.copper = new THREE.MeshStandardMaterial({ color: 0xD96B27, metalness: 0.85, roughness: 0.35, emissive: 0x160800, emissiveIntensity: 0.0 });
+  materials.copperBright = new THREE.MeshStandardMaterial({ color: 0xe8853f, metalness: 0.9, roughness: 0.3 });
+  materials.carbon = new THREE.MeshStandardMaterial({ color: 0x15171a, metalness: 0.1, roughness: 0.9 });
+  materials.brassHolder = new THREE.MeshStandardMaterial({ color: 0xb08d57, metalness: 0.85, roughness: 0.4 });
+  materials.spring = new THREE.MeshStandardMaterial({ color: 0x9aa0a6, metalness: 0.9, roughness: 0.35 });
+  materials.magnetBlue = new THREE.MeshStandardMaterial({ color: 0x2f6bbf, metalness: 0.5, roughness: 0.5 });
+  materials.gear = new THREE.MeshStandardMaterial({ color: 0x8d9298, metalness: 0.9, roughness: 0.35 });
+  materials.insulator = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, metalness: 0.0, roughness: 0.8 });
+  materials.disc = new THREE.MeshStandardMaterial({ color: 0x6e6256, metalness: 0.2, roughness: 0.85 });
+  materials.flange = new THREE.MeshStandardMaterial({ color: 0xcfd3d8, metalness: 0.9, roughness: 0.3 });
+
+  // ---------------------------------------------------------------------------
+  // Helper: register a top-level component group, give it a stable name, enable
+  // shadows on all meshes, capture its home transform, and store references.
+  // ---------------------------------------------------------------------------
+  function registerComponent(name, group) {
+    group.name = name;
+    group.userData.name = name;
+    group.traverse((obj) => {
+      if (obj.isMesh) { obj.castShadow = true; obj.receiveShadow = true; }
+    });
+    const home = {
+      position: group.position.clone(),
+      quaternion: group.quaternion.clone(),
+      scale: group.scale.clone()
+    };
+    group.userData.home = home;
+    homeTransforms.set(name, home);
+    components.set(name, group);
+    return group;
+  }
+
+  // Small helper to build a cylindrical set of teeth around a radius (stylised gear).
+  function addGearTeeth(parent, count, radius, toothW, toothH, toothD, mat, axis = 'z') {
+    for (let i = 0; i < count; i++) {
+      const a = (i / count) * Math.PI * 2;
+      const tooth = new THREE.Mesh(new THREE.BoxGeometry(toothW, toothH, toothD), mat);
+      if (axis === 'z') {
+        tooth.position.set(Math.cos(a) * radius, Math.sin(a) * radius, 0);
+        tooth.rotation.z = a;
+      } else { // 'y' axis gear (teeth around horizontal ring)
+        tooth.position.set(Math.cos(a) * radius, 0, Math.sin(a) * radius);
+        tooth.rotation.y = -a;
+      }
+      parent.add(tooth);
+    }
+  }
+
+  // ===========================================================================
+  // GEOMETRY CONVENTION
+  //   Motor axis runs along local Z of rotorGroup.
+  //   The rotor cylinders are built along Z (rotated so their length is on Z).
+  //   spindleGroup output axis is world Y (perpendicular), at the gearbox head.
+  // ===========================================================================
+
+  // --- (A) Outer Housing / Body -------------------------------------------------
+  function buildHousing() {
+    const g = new THREE.Group();
+
+    // Main motor barrel (cutaway-capable, semi-transparent housing material).
+    const barrel = new THREE.Mesh(new THREE.CylinderGeometry(1.15, 1.15, 4.2, 48, 1, true), materials.housing);
+    barrel.rotation.z = Math.PI / 2; // lie along X (world) for the body silhouette
+    barrel.position.set(0, 0, 0);
+    g.add(barrel);
+
+    // Rear cap.
+    const rearCap = new THREE.Mesh(new THREE.SphereGeometry(1.15, 32, 16, 0, Math.PI * 2, 0, Math.PI / 2), materials.housingAccent);
+    rearCap.rotation.z = -Math.PI / 2;
+    rearCap.position.set(-2.1, 0, 0);
+    g.add(rearCap);
+
+    // Ventilation slots near the rear.
+    for (let i = 0; i < 10; i++) {
+      const a = (i / 10) * Math.PI * 2;
+      const vent = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.06, 0.18), materials.housingAccent);
+      vent.position.set(-1.5, Math.sin(a) * 1.16, Math.cos(a) * 1.16);
+      vent.rotation.x = -a;
+      g.add(vent);
+    }
+
+    // Gearbox head (at +X, stepping up toward the spindle on +Y).
+    const head = new THREE.Mesh(new THREE.CylinderGeometry(1.0, 1.1, 1.3, 36), materials.housing);
+    head.position.set(2.3, 0.1, 0);
+    g.add(head);
+    const headTop = new THREE.Mesh(new THREE.CylinderGeometry(0.75, 0.9, 0.8, 36), materials.housingAccent);
+    headTop.position.set(2.3, 0.95, 0);
+    g.add(headTop);
+
+    // Rear handle.
+    const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.55, 1.6, 24), materials.housingAccent);
+    handle.rotation.z = Math.PI / 2;
+    handle.position.set(-2.9, 0, 0);
+    g.add(handle);
+
+    // Power cable (tube curve) trailing from the rear.
+    const cablePath = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(-3.7, 0, 0),
+      new THREE.Vector3(-4.6, -0.4, 0.2),
+      new THREE.Vector3(-5.2, -1.2, 0.1),
+      new THREE.Vector3(-5.6, -2.2, 0.0)
+    ]);
+    const cable = new THREE.Mesh(new THREE.TubeGeometry(cablePath, 32, 0.14, 12, false), materials.carbon);
+    g.add(cable);
+
+    return g;
+  }
+
+  // --- (B) Armature / Rotor (child of rotorGroup) -------------------------------
+  // Built along local Z (motor axis). Returns a group to parent under rotorGroup.
+  function buildArmature() {
+    const g = new THREE.Group();
+
+    // Central steel shaft (long, along Z).
+    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 4.6, 24), materials.steel);
+    shaft.rotation.x = Math.PI / 2;
+    g.add(shaft);
+
+    // Laminated iron core (stack of thin discs).
+    const coreLen = 1.6;
+    const lamCount = 16;
+    for (let i = 0; i < lamCount; i++) {
+      const z = -coreLen / 2 + (i / (lamCount - 1)) * coreLen;
+      const lam = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.42, coreLen / lamCount * 0.75, 24), materials.ironLam);
+      lam.rotation.x = Math.PI / 2;
+      lam.position.z = z;
+      g.add(lam);
+    }
+
+    // Copper windings around the poles (symmetric).
+    const poles = 8;
+    for (let i = 0; i < poles; i++) {
+      const a = (i / poles) * Math.PI * 2;
+      const coil = new THREE.Mesh(new THREE.TorusGeometry(0.3, 0.1, 10, 20, Math.PI), materials.copper);
+      coil.position.set(Math.cos(a) * 0.34, Math.sin(a) * 0.34, 0);
+      coil.rotation.z = a;
+      coil.rotation.y = Math.PI / 2;
+      g.add(coil);
+      // Axial winding bars running along the core.
+      const bar = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, coreLen + 0.1, 8), materials.copper);
+      bar.rotation.x = Math.PI / 2;
+      bar.position.set(Math.cos(a) * 0.44, Math.sin(a) * 0.44, 0);
+      g.add(bar);
+    }
+
+    return g;
+  }
+
+  // --- (C) Commutator (child of rotorGroup) -------------------------------------
+  function buildCommutator() {
+    const g = new THREE.Group();
+    const segCount = 12;
+    const radius = 0.26;
+    for (let i = 0; i < segCount; i++) {
+      const a = (i / segCount) * Math.PI * 2;
+      const seg = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.5, 0.06), materials.copperBright);
+      seg.position.set(Math.cos(a) * radius, Math.sin(a) * radius, 0);
+      seg.rotation.z = a + Math.PI / 2;
+      g.add(seg);
+      // Insulator gaps between segments.
+      const gap = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.52, 0.065), materials.insulator);
+      const ga = a + (Math.PI / segCount);
+      gap.position.set(Math.cos(ga) * radius, Math.sin(ga) * radius, 0);
+      gap.rotation.z = ga + Math.PI / 2;
+      g.add(gap);
+    }
+    // Hub.
+    const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.52, 20), materials.insulator);
+    hub.rotation.x = Math.PI / 2;
+    g.add(hub);
+    return g;
+  }
+
+  // --- (F) Cooling Fan (child of rotorGroup) ------------------------------------
+  function buildCoolingFan() {
+    const g = new THREE.Group();
+    const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.18, 20), materials.housingAccent);
+    hub.rotation.x = Math.PI / 2;
+    g.add(hub);
+    const blades = 9;
+    for (let i = 0; i < blades; i++) {
+      const a = (i / blades) * Math.PI * 2;
+      const blade = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.36, 0.03), materials.steel);
+      blade.position.set(Math.cos(a) * 0.45, Math.sin(a) * 0.45, 0);
+      blade.rotation.z = a;
+      blade.rotation.x = 0.4; // pitch for airflow
+      g.add(blade);
+    }
+    return g;
+  }
+
+  // --- (G1) Pinion gear (child of rotorGroup, at the gearbox head on motor axis) -
+  function buildPinion() {
+    const g = new THREE.Group();
+    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.28, 0.4, 24), materials.gear);
+    body.rotation.x = Math.PI / 2; // aligned along Z (motor axis)
+    g.add(body);
+    addGearTeeth(g, 12, 0.3, 0.07, 0.12, 0.38, materials.gear, 'z');
+    return g;
+  }
+
+  // --- (E) Stator (child of statorGroup, fixed) ---------------------------------
+  function buildStator() {
+    const g = new THREE.Group();
+    // Two iron pole pieces top/bottom surrounding the armature.
+    for (const sign of [1, -1]) {
+      const pole = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.5, 0.9), materials.ironLam);
+      pole.position.set(0, sign * 0.78, 0);
+      g.add(pole);
+      // Pole shoe (curved inner face) approximated with a partial cylinder.
+      const shoe = new THREE.Mesh(new THREE.CylinderGeometry(0.62, 0.62, 1.5, 24, 1, true, -0.6, 1.2), materials.ironLam);
+      shoe.rotation.z = Math.PI / 2;
+      shoe.rotation.x = sign > 0 ? 0 : Math.PI;
+      g.add(shoe);
+      // Field windings on each pole.
+      for (let k = -1; k <= 1; k += 2) {
+        const w = new THREE.Mesh(new THREE.TorusGeometry(0.33, 0.1, 10, 20), materials.copper);
+        w.position.set(k * 0.5, sign * 0.78, 0);
+        w.rotation.y = Math.PI / 2;
+        g.add(w);
+      }
+    }
+    return g;
+  }
+
+  // --- (D) Carbon Brushes (child of statorGroup, fixed) -------------------------
+  // Two brushes left/right of the commutator, each with holder + spring.
+  function buildBrushes(commutatorZ) {
+    const g = new THREE.Group();
+    for (const sign of [1, -1]) {
+      const assembly = new THREE.Group();
+      const yOff = sign * 0.42;
+      // Carbon block.
+      const block = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.26, 0.16), materials.carbon);
+      block.position.set(0, yOff, commutatorZ);
+      assembly.add(block);
+      // Metal holder around it.
+      const holder = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.3, 0.22), materials.brassHolder);
+      holder.position.set(0, yOff + sign * 0.18, commutatorZ);
+      assembly.add(holder);
+      // Pressure spring (small coil approximated by a short torus stack).
+      const spring = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.18, 12), materials.spring);
+      spring.position.set(0, yOff + sign * 0.36, commutatorZ);
+      assembly.add(spring);
+      g.add(assembly);
+    }
+    return g;
+  }
+
+  // --- (G2) Crown bevel gear (child of spindleGroup, perpendicular axis) --------
+  function buildCrownGear() {
+    const g = new THREE.Group();
+    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.7, 0.7, 0.22, 36), materials.gear);
+    g.add(body); // already along Y (spindle axis)
+    // Bevel teeth around the rim, tilted toward the pinion.
+    const count = 28;
+    for (let i = 0; i < count; i++) {
+      const a = (i / count) * Math.PI * 2;
+      const tooth = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.16, 0.12), materials.gear);
+      tooth.position.set(Math.cos(a) * 0.7, 0.02, Math.sin(a) * 0.7);
+      tooth.rotation.y = -a;
+      tooth.rotation.x = 0.35;
+      g.add(tooth);
+    }
+    return g;
+  }
+
+  // --- (H) Spindle + flange + lock nut + grinding disc (child of spindleGroup) ---
+  function buildSpindleAssembly() {
+    const g = new THREE.Group();
+    // Spindle shaft along Y, pointing down out of the gearbox.
+    const spindle = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.13, 1.4, 20), materials.steel);
+    spindle.position.set(0, -0.7, 0);
+    g.add(spindle);
+    // Inner flange.
+    const flangeInner = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.35, 0.08, 28), materials.flange);
+    flangeInner.position.set(0, -1.25, 0);
+    g.add(flangeInner);
+    // Grinding disc.
+    const disc = new THREE.Mesh(new THREE.CylinderGeometry(1.25, 1.25, 0.06, 48), materials.disc);
+    disc.position.set(0, -1.33, 0);
+    g.add(disc);
+    // Outer flange / clamp.
+    const flangeOuter = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 0.06, 28), materials.flange);
+    flangeOuter.position.set(0, -1.4, 0);
+    g.add(flangeOuter);
+    // Lock nut.
+    const nut = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.12, 6), materials.flange);
+    nut.position.set(0, -1.48, 0);
+    g.add(nut);
+    return g;
+  }
+
+  // ===========================================================================
+  // ASSEMBLY — build groups and wire the transform hierarchy.
+  // ===========================================================================
+
+  // root group so FEAT-002 can offset/explode everything relative to one origin.
+  const machineRoot = new THREE.Group();
+  machineRoot.name = 'machineRoot';
+  scene.add(machineRoot);
+
+  // --- Housing (static, parented to root) ---
+  const housingGroup = buildHousing();
+  machineRoot.add(housingGroup);
+  registerComponent('housing', housingGroup);
+
+  // --- rotorGroup: spins on the MOTOR axis (local Z). Positioned along the body.
+  const rotorGroup = new THREE.Group();
+  rotorGroup.position.set(-0.4, 0, 0);
+  rotorGroup.rotation.y = Math.PI / 2; // orient local Z -> world X (motor runs along X)
+  machineRoot.add(rotorGroup);
+
+  const armature = buildArmature();
+  armature.position.set(0, 0, 0);
+  rotorGroup.add(armature);
+  registerComponent('armature', armature);
+
+  const commutator = buildCommutator();
+  const COMMUTATOR_Z = -1.3; // toward the rear of the rotor
+  commutator.position.set(0, 0, COMMUTATOR_Z);
+  rotorGroup.add(commutator);
+  registerComponent('commutator', commutator);
+
+  const coolingFan = buildCoolingFan();
+  coolingFan.position.set(0, 0, -1.9); // behind the core near the rear
+  rotorGroup.add(coolingFan);
+  registerComponent('coolingFan', coolingFan);
+
+  const pinion = buildPinion();
+  pinion.position.set(0, 0, 2.3); // front toward the gearbox head
+  rotorGroup.add(pinion);
+  registerComponent('pinion', pinion);
+
+  registerComponent('rotorGroup', rotorGroup);
+
+  // --- statorGroup: FIXED. Holds stator pole pieces + carbon brushes.
+  const statorGroup = new THREE.Group();
+  statorGroup.position.set(-0.4, 0, 0);
+  statorGroup.rotation.y = Math.PI / 2; // same orientation as rotor (local Z == motor axis)
+  machineRoot.add(statorGroup);
+
+  const stator = buildStator();
+  statorGroup.add(stator);
+  registerComponent('stator', stator);
+
+  const brushes = buildBrushes(COMMUTATOR_Z);
+  statorGroup.add(brushes);
+  registerComponent('carbonBrushes', brushes);
+
+  registerComponent('statorGroup', statorGroup);
+
+  // --- spindleGroup: spins on the PERPENDICULAR output axis (world Y) at the head.
+  const spindleGroup = new THREE.Group();
+  spindleGroup.position.set(2.3, 0.1, 0); // at the gearbox head
+  machineRoot.add(spindleGroup);
+
+  const crownGear = buildCrownGear();
+  crownGear.position.set(0, 0.55, 0); // up top where it meets the pinion
+  spindleGroup.add(crownGear);
+  registerComponent('crownGear', crownGear);
+
+  const spindleAssembly = buildSpindleAssembly();
+  spindleGroup.add(spindleAssembly);
+  registerComponent('spindleAssembly', spindleAssembly);
+
+  registerComponent('spindleGroup', spindleGroup);
+
+  // Capture the machineRoot home transform too (useful for a global reset).
+  registerComponent('machineRoot', machineRoot);
+
+  // ===========================================================================
+  // RENDER LOOP — reuse vectors, no per-frame allocation.
+  // Spin wiring (RPM) is added in FEAT-002; here we only render the static scene.
+  // ===========================================================================
+  const _tmpVec = new THREE.Vector3(); // reserved scratch for later features
+  const clock = new THREE.Clock();
+
+  function onResize() {
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+    renderer.setSize(w, h);
+  }
+  window.addEventListener('resize', onResize);
+
+  function animate() {
+    requestAnimationFrame(animate);
+    const dt = clock.getDelta(); // available for FEAT-002 time-based motion
+    void dt;
+    controls.update();
+    renderer.render(scene, camera);
+  }
+  animate();
+
+  // ---------------------------------------------------------------------------
+  // Expose central objects for later features (FEAT-002 / FEAT-003).
+  // ---------------------------------------------------------------------------
+  window.APP = {
+    THREE,
+    scene,
+    camera,
+    renderer,
+    controls,
+    components,
+    homeTransforms,
+    materials,
+    machineRoot,
+    rotorGroup,
+    statorGroup,
+    spindleGroup,
+    initialCamera,
+    resetCamera() {
+      camera.position.copy(initialCamera.position);
+      controls.target.copy(initialCamera.target);
+      controls.update();
+    }
+  };
+  </script>
+</body>
+</html>
