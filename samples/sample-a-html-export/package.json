@@ -1,0 +1,14 @@
+{
+  "name": "angle-grinder-video-sample-a",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Deterministic single-file 3D angle-grinder educational video with frame-by-frame MP4 export (no Remotion).",
+  "scripts": {
+    "export:frames": "node scripts/export-frames.mjs",
+    "export:mp4": "ffmpeg -framerate 60 -i frames/f%05d.png -c:v libx264 -pix_fmt yuv420p -crf 16 -y angle-grinder.mp4"
+  },
+  "devDependencies": {
+    "puppeteer": "^23.0.0"
+  }
+}

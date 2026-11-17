@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Cara Kerja Mesin Gerinda — Educational Video (Sample A)</title>
+
+<!--
+  SAMPLE A — Single-file deterministic video (NO Remotion).
+  ---------------------------------------------------------
+  This plays like a video and exports to MP4 frame-by-frame, following the
+  bang-motion architecture: ONE source of truth for time (a single `t` in
+  seconds), no wall-clock, no rAF accumulation. Every visual is a pure
+  function of `t`, so scrubbing and headless export are frame-accurate.
+
+  Controls:
+    - Opens: autoplays, then loops.
+    - ?debug=1  -> scrub bar + clock (review tool).
+    - ?clean=1  -> no autoplay, no UI (used by the export script).
+  Exposes window.VIDEO = { seek(t), DURATION, ready } for scripts/export-frames.mjs.
+-->
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.169.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.169.0/examples/jsm/"
+  }
+}
+</script>
+
+<style>
+  html,body{margin:0;height:100%;background:#0d0f12;overflow:hidden;
+    font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;}
+
+  /* Stage is pinned at 1080x1920 (9:16) and only SCALED to fit the window,
+     so the composition never changes with window size (bang-motion rule). */
+  #stage{position:fixed;left:50%;top:50%;width:1080px;height:1920px;
+    transform:translate(-50%,-50%) scale(var(--fit,1));
+    overflow:hidden;background:#F5F3EF;border-radius:0;}
+  #scene{display:block;width:1080px;height:1920px;}
+
+  /* DOM caption layer lives inside the stage so it scales with the world. */
+  #dom{position:absolute;inset:0;pointer-events:none;}
+
+  .subtitle{position:absolute;left:70px;top:70px;font-size:22px;letter-spacing:.22em;
+    font-weight:700;color:#2a2f36;text-transform:uppercase;opacity:0;}
+  .headline{position:absolute;left:70px;top:104px;font-family:Georgia,"Times New Roman",serif;
+    font-weight:800;font-size:76px;line-height:1.0;color:#22262b;opacity:0;}
+  .headline .accent{color:#D96B27;}
+
+  /* Lower-third caption card */
+  #cap{position:absolute;left:60px;right:60px;bottom:160px;padding:26px 30px;border-radius:22px;
+    background:rgba(16,18,22,.70);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+    border:1px solid rgba(255,255,255,.08);color:#f1ece3;opacity:0;}
+  #cap .tag{display:inline-block;font-size:18px;letter-spacing:.14em;font-weight:800;
+    color:#ffcf9a;text-transform:uppercase;margin-bottom:10px;}
+  #cap .txt{font-size:34px;line-height:1.3;}
+  #cap .hl{color:#ff9d4d;font-weight:800;}
+
+  /* Progress bar at very bottom */
+  #bar{position:absolute;left:60px;right:60px;bottom:90px;height:8px;border-radius:999px;
+    background:rgba(0,0,0,.12);overflow:hidden;}
+  #bar>i{display:block;height:100%;width:0;background:linear-gradient(90deg,#f6a623,#D96B27);}
+
+  /* Developer scrub panel — only with ?debug=1 */
+  #panel{position:fixed;left:50%;bottom:14px;transform:translateX(-50%);display:none;
+    gap:10px;align-items:center;background:rgba(16,18,22,.85);color:#eee;
+    padding:8px 14px;border-radius:999px;font-size:13px;z-index:50;}
+  #panel.on{display:flex;}
+  #panel button{background:#D96B27;color:#fff;border:0;border-radius:8px;padding:5px 10px;cursor:pointer;}
+  #panel input[type=range]{width:46vw;}
+  #panel .clk{font-variant-numeric:tabular-nums;min-width:96px;text-align:center;}
+</style>
+</head>
+<body>
+  <div id="stage">
+    <canvas id="scene"></canvas>
+    <div id="dom">
+      <div class="subtitle" id="sub">DALAM BODI — MOTOR UNIVERSAL</div>
+      <div class="headline" id="head">listrik jadi<br><span class="accent">putaran</span></div>
+      <div id="cap"><span class="tag" id="cap-tag">Tahap 1/6</span><div class="txt" id="cap-txt"></div></div>
+      <div id="bar"><i id="bar-fill"></i></div>
+    </div>
+  </div>
+
+  <div id="panel">
+    <button id="pp">❚❚</button>
+    <input id="scrub" type="range" min="0" max="1000" value="0" />
+    <span class="clk" id="clk">0.00 / 0.00</span>
+  </div>
+
+<script type="module">
+import * as THREE from 'three';
+
+/* ============================================================================
+ * 1. TIMELINE MODEL — the single source of truth for time.
+ *    Everything downstream is a pure function of `t` (seconds).
+ * ========================================================================== */
+const DURATION = 24;                      // total video length (s)
+const RPM_AT = (t) => {                   // how "energized" the motor is over time
+  // ramps up through the piece; purely a function of t.
+  const seg = [[0,0],[6,0],[9,2000],[13,6000],[18,11000],[24,11000]];
+  for(let i=0;i<seg.length-1;i++){
+    const [t0,v0]=seg[i],[t1,v1]=seg[i+1];
+    if(t<=t1){ const k=(t-t0)/(t1-t0||1); return v0+(v1-v0)*Math.min(1,Math.max(0,k)); }
+  }
+  return 11000;
+};
+
+// 6 narrated stages. `at` = start second. Plain sentences + highlighted terms.
+const STAGES = [
+  { at:0.0,  tag:'Tahap 1/6', txt:'Inilah bagian dalam mesin <b>gerinda tangan</b>.', hl:['gerinda tangan'] },
+  { at:4.0,  tag:'Tahap 2/6', txt:'Arus <b>220V AC</b> masuk lewat kabel menuju <b>sikat karbon</b>.', hl:['220V AC','sikat karbon'] },
+  { at:8.0,  tag:'Tahap 3/6', txt:'Sikat karbon menyalurkan arus ke <b>komutator</b> yang berputar.', hl:['komutator'] },
+  { at:12.0, tag:'Tahap 4/6', txt:'Arus di kumparan <b>armature</b> + medan <b>stator</b> menghasilkan torsi.', hl:['armature','stator'] },
+  { at:16.5, tag:'Tahap 5/6', txt:'Putaran diteruskan lewat <b>bevel gear</b> ke spindle.', hl:['bevel gear'] },
+  { at:20.5, tag:'Tahap 6/6', txt:'Spindle memutar <b>mata gerinda</b> hingga ~11.000 RPM.', hl:['mata gerinda'] },
+];
+
+/* small deterministic helpers (no Math.random in the render path) */
+const clamp = (x,a,b)=>Math.min(b,Math.max(a,x));
+const smooth = (a,b,x)=>{ const t=clamp((x-a)/(b-a),0,1); return t*t*(3-2*t); };  // smoothstep
+const ease = (x)=>1-Math.pow(1-clamp(x,0,1),3);
+
+/* ============================================================================
+ * 2. THREE.JS SCENE — state-driven. The scene knows nothing about time; it
+ *    exposes meshes, and render(t) sets their transforms from `t`.
+ * ========================================================================== */
+const canvas = document.getElementById('scene');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias:true });
+renderer.setSize(1080,1920,false);
+renderer.setPixelRatio(1);                 // fixed -> deterministic pixels for export
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color('#F5F3EF');
+const camera = new THREE.PerspectiveCamera(40, 1080/1920, 0.1, 100);
+
+// lights
+scene.add(new THREE.HemisphereLight(0xffffff,0xcdc6ba,0.6));
+scene.add(new THREE.AmbientLight(0xffffff,0.25));
+const key = new THREE.DirectionalLight(0xffffff,2.2);
+key.position.set(5,9,6); key.castShadow=true;
+key.shadow.mapSize.set(2048,2048);
+key.shadow.camera.near=0.5; key.shadow.camera.far=40;
+key.shadow.camera.left=-10; key.shadow.camera.right=10;
+key.shadow.camera.top=10; key.shadow.camera.bottom=-10;
+key.shadow.bias=-0.0004; key.shadow.normalBias=0.02;
+scene.add(key);
+const rim = new THREE.DirectionalLight(0xfff0e0,0.8); rim.position.set(-7,5,-5); scene.add(rim);
+const fill= new THREE.DirectionalLight(0xdfe6ff,0.5); fill.position.set(-3,2,7); scene.add(fill);
+
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(60,60),
+  new THREE.MeshStandardMaterial({color:0xece8e0,roughness:0.95,metalness:0}));
+ground.rotation.x=-Math.PI/2; ground.position.y=-2.2; ground.receiveShadow=true; scene.add(ground);
+
+// materials
+const M = {
+  housing: new THREE.MeshStandardMaterial({color:0x3a3f45,metalness:0.35,roughness:0.55,transparent:true,opacity:1}),
+  housingDk:new THREE.MeshStandardMaterial({color:0x24282c,metalness:0.4,roughness:0.5,transparent:true,opacity:1}),
+  steel:   new THREE.MeshStandardMaterial({color:0xbfc4ca,metalness:0.95,roughness:0.3}),
+  iron:    new THREE.MeshStandardMaterial({color:0x4a4d52,metalness:0.8,roughness:0.55}),
+  copper:  new THREE.MeshStandardMaterial({color:0xD96B27,metalness:0.85,roughness:0.35,emissive:0x160800,emissiveIntensity:0}),
+  carbon:  new THREE.MeshStandardMaterial({color:0x15171a,metalness:0.1,roughness:0.9}),
+  gear:    new THREE.MeshStandardMaterial({color:0x8d9298,metalness:0.9,roughness:0.35}),
+  disc:    new THREE.MeshStandardMaterial({color:0x6e6256,metalness:0.2,roughness:0.85}),
+  flange:  new THREE.MeshStandardMaterial({color:0xcfd3d8,metalness:0.9,roughness:0.3}),
+  brush:   new THREE.MeshStandardMaterial({color:0xb08d57,metalness:0.85,roughness:0.4}),
+};
+
+// ---- build the grinder --------------------------------------------------
+// GEOMETRY CONVENTION: motor axis along world X; rotorGroup spins about local X.
+const root = new THREE.Group(); scene.add(root);
+
+// Housing (semi-transparent so internals show when faded)
+const housing = new THREE.Group();
+(() => {
+  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(1.1,1.1,4.0,48,1,true), M.housing);
+  barrel.rotation.z=Math.PI/2; housing.add(barrel);
+  const rear = new THREE.Mesh(new THREE.SphereGeometry(1.1,32,16,0,Math.PI*2,0,Math.PI/2),M.housingDk);
+  rear.rotation.z=-Math.PI/2; rear.position.x=-2.0; housing.add(rear);
+  for(let i=0;i<10;i++){ const a=i/10*Math.PI*2;
+    const v=new THREE.Mesh(new THREE.BoxGeometry(0.46,0.05,0.16),M.housingDk);
+    v.position.set(-1.4,Math.sin(a)*1.11,Math.cos(a)*1.11); v.rotation.x=-a; housing.add(v); }
+  const head=new THREE.Mesh(new THREE.CylinderGeometry(0.95,1.05,1.25,36),M.housing);
+  head.position.set(2.2,0.1,0); housing.add(head);
+  const headTop=new THREE.Mesh(new THREE.CylinderGeometry(0.7,0.85,0.75,36),M.housingDk);
+  headTop.position.set(2.2,0.9,0); housing.add(headTop);
+  const handle=new THREE.Mesh(new THREE.CylinderGeometry(0.52,0.52,1.5,24),M.housingDk);
+  handle.rotation.z=Math.PI/2; handle.position.set(-2.75,0,0); housing.add(handle);
+})();
+root.add(housing);
+
+// Stator (fixed) + carbon brushes (fixed)
+const stator = new THREE.Group();
+(() => {
+  for(const s of [1,-1]){
+    const pole=new THREE.Mesh(new THREE.BoxGeometry(2.0,0.35,1.5),M.iron);
+    pole.position.set(0,s*0.95,0); stator.add(pole);
+    for(let i=0;i<5;i++){ const w=new THREE.Mesh(new THREE.TorusGeometry(0.4,0.08,8,20),M.copper);
+      w.position.set(-0.7+i*0.35,s*0.95,0); w.rotation.y=Math.PI/2; stator.add(w); }
+  }
+  // brushes sit at the commutator (near +X end of rotor)
+  for(const s of [1,-1]){
+    const b=new THREE.Mesh(new THREE.BoxGeometry(0.22,0.4,0.22),M.carbon);
+    b.position.set(1.25,s*0.55,0); stator.add(b);
+    const h=new THREE.Mesh(new THREE.BoxGeometry(0.3,0.25,0.3),M.brush);
+    h.position.set(1.25,s*0.85,0); stator.add(h);
+  }
+})();
+root.add(stator);
+
+// Rotor group (armature + commutator + fan + pinion) — spins on X
+const rotor = new THREE.Group();
+(() => {
+  const shaft=new THREE.Mesh(new THREE.CylinderGeometry(0.12,0.12,4.2,20),M.steel);
+  shaft.rotation.z=Math.PI/2; rotor.add(shaft);
+  // laminated iron core
+  const core=new THREE.Mesh(new THREE.CylinderGeometry(0.62,0.62,1.7,10),M.iron);
+  core.rotation.z=Math.PI/2; rotor.add(core);
+  // copper windings around the core (slots)
+  for(let i=0;i<8;i++){ const a=i/8*Math.PI*2;
+    const w=new THREE.Mesh(new THREE.BoxGeometry(1.8,0.12,0.12),M.copper);
+    w.position.set(0,Math.sin(a)*0.6,Math.cos(a)*0.6); rotor.add(w); }
+  // commutator (segmented copper) near +X
+  const comm=new THREE.Group();
+  for(let i=0;i<12;i++){ const a=i/12*Math.PI*2;
+    const seg=new THREE.Mesh(new THREE.BoxGeometry(0.42,0.1,0.07),M.copper);
+    seg.position.set(1.25,Math.sin(a)*0.3,Math.cos(a)*0.3); seg.rotation.x=-a; comm.add(seg); }
+  rotor.add(comm);
+  // cooling fan near -X
+  const fan=new THREE.Group();
+  for(let i=0;i<9;i++){ const a=i/9*Math.PI*2;
+    const bl=new THREE.Mesh(new THREE.BoxGeometry(0.06,0.5,0.18),M.housingDk);
+    bl.position.set(-1.7,Math.sin(a)*0.42,Math.cos(a)*0.42); bl.rotation.x=-a; bl.rotation.z=0.5; fan.add(bl); }
+  rotor.add(fan);
+  // pinion at +X meeting the gearbox head
+  const pin=new THREE.Mesh(new THREE.CylinderGeometry(0.28,0.28,0.4,12),M.gear);
+  pin.rotation.z=Math.PI/2; pin.position.set(1.9,0,0); rotor.add(pin);
+})();
+root.add(rotor);
+
+// Spindle group (crown bevel gear + spindle + flange + disc) — spins on Y
+const spindle = new THREE.Group();
+spindle.position.set(2.2,0,0);
+(() => {
+  const crown=new THREE.Mesh(new THREE.CylinderGeometry(0.55,0.55,0.25,28),M.gear);
+  crown.position.y=0.2; spindle.add(crown);
+  const sh=new THREE.Mesh(new THREE.CylinderGeometry(0.14,0.14,1.4,16),M.steel);
+  sh.position.y=0.9; spindle.add(sh);
+  const fl=new THREE.Mesh(new THREE.CylinderGeometry(0.4,0.4,0.1,24),M.flange);
+  fl.position.y=1.5; spindle.add(fl);
+  const disc=new THREE.Mesh(new THREE.CylinderGeometry(1.5,1.5,0.06,40),M.disc);
+  disc.position.y=1.6; spindle.add(disc);
+  const nut=new THREE.Mesh(new THREE.CylinderGeometry(0.2,0.2,0.12,6),M.steel);
+  nut.position.y=1.68; spindle.add(nut);
+})();
+root.add(spindle);
+
+// Electrical spark sprite group at the brush contact (deterministic)
+const sparks = new THREE.Group(); root.add(sparks);
+for(let i=0;i<10;i++){
+  const s=new THREE.Mesh(new THREE.SphereGeometry(0.04,6,6),
+    new THREE.MeshBasicMaterial({color: i%2? 0xffd34d:0xff7a1a, transparent:true, opacity:0.9}));
+  s.userData.seed=i; sparks.add(s);
+}
+
+const BEVEL_RATIO = 12/28;   // pinion teeth / crown teeth
+
+/* ---- the one function that maps t -> everything ---- */
+let spinPhase = 0;           // integrated angle, but computed from t (not accumulated)
+function render(t){
+  const rpm = RPM_AT(t);
+  const energized = rpm > 1;
+
+  // Rotor angle as an analytic integral of the RPM schedule would be ideal,
+  // but a smooth monotonic proxy keeps it deterministic & reproducible:
+  // use the time-integral approximation via fixed-step sampling from 0..t.
+  // (cheap, deterministic, same result for same t)
+  const angle = rotorAngle(t);
+  rotor.rotation.x = angle;
+  spindle.rotation.y = -angle * BEVEL_RATIO;
+
+  // copper glow + brush sparks ramp with energy
+  const glow = smooth(0, 11000, rpm);
+  M.copper.emissiveIntensity = glow * 0.9;
+  sparks.visible = energized;
+  sparks.children.forEach((s,i)=>{
+    const ph=(t*22 + i*0.7);
+    const on = (Math.sin(ph)*0.5+0.5) > 0.4 ? 1:0;
+    s.position.set(1.25, 0.55*(i%2?1:-1), Math.sin(ph*3)*0.12);
+    s.material.opacity = on*glow;
+    const sc = 0.6+0.8*(Math.sin(ph*2)*0.5+0.5);
+    s.scale.setScalar(sc);
+  });
+
+  // housing transparency: solid at start, fades to reveal internals by t=4..6
+  const op = 1 - smooth(3.5, 6.0, t)*0.82;
+  M.housing.opacity = op; M.housingDk.opacity = op;
+
+  // ---- CAMERA: a continuous move, not cuts. Pure function of t. ----
+  // Start wide 3/4, drift in toward the motor, then pull to the gearbox head.
+  const a = t/DURATION;
+  const orbit = -0.6 + a*1.2 + Math.sin(t*0.25)*0.04;      // slow orbit + breathing
+  const dist  = 11 - smooth(2,10,t)*3.2 + smooth(16,22,t)*2.2;
+  const height= 3.2 + Math.sin(t*0.2)*0.3 + smooth(16,22,t)*1.6;
+  const focusX = smooth(15,20,t)*2.0;                      // slide focus to gearbox late
+  camera.position.set(Math.cos(orbit)*dist, height, Math.sin(orbit)*dist);
+  camera.lookAt(focusX, 0.2 + smooth(16,22,t)*0.8, 0);
+
+  renderer.render(scene, camera);
+  updateDom(t);
+}
+
+// deterministic rotor angle: integrate the piecewise-linear RPM schedule
+// analytically so angle(t) is exact & reproducible (no accumulation).
+function rotorAngle(t){
+  const seg=[[0,0],[6,0],[9,2000],[13,6000],[18,11000],[24,11000]];
+  let ang=0;
+  for(let i=0;i<seg.length-1;i++){
+    const [t0,v0]=seg[i],[t1,v1]=seg[i+1];
+    const a0=t0, a1=Math.min(t,t1);
+    if(a1<=a0) continue;
+    // rpm -> rad/s: rpm/60 * 2pi. linear in time -> integral is trapezoid.
+    const toRad=(r)=>r/60*Math.PI*2;
+    const dt=a1-a0, k=(a1-t0)/(t1-t0||1);
+    const vEnd=v0+(v1-v0)*k;
+    ang += (toRad(v0)+toRad(vEnd))/2 * dt * 0.06;  // 0.06 = visual slowdown factor
+    if(t<=t1) break;
+  }
+  return ang;
+}
+
+/* ============================================================================
+ * 3. DOM captions — also a pure function of t.
+ * ========================================================================== */
+const sub=document.getElementById('sub'), head=document.getElementById('head');
+const cap=document.getElementById('cap'), capTag=document.getElementById('cap-tag'), capTxt=document.getElementById('cap-txt');
+const barFill=document.getElementById('bar-fill');
+let lastStage=-1;
+function hl(txt){ return txt.replace(/<b>(.*?)<\/b>/g,'<span class="hl">$1</span>'); }
+function updateDom(t){
+  // title in first 4s
+  sub.style.opacity  = (smooth(0.3,1.0,t) - smooth(3.4,4.0,t)).toFixed(3);
+  head.style.opacity = (smooth(0.6,1.4,t) - smooth(3.4,4.0,t)).toFixed(3);
+  head.style.transform = `translateY(${(1-ease(smooth(0.6,1.6,t)))*30}px)`;
+
+  // active stage
+  let idx=0; for(let i=0;i<STAGES.length;i++) if(t>=STAGES[i].at) idx=i;
+  if(idx!==lastStage){
+    const s=STAGES[idx]; capTag.textContent=s.tag; capTxt.innerHTML=hl(s.txt); lastStage=idx;
+  }
+  // caption card fades in after the title (from t=3.6) and stays
+  cap.style.opacity = smooth(3.6,4.3,t).toFixed(3);
+  barFill.style.width = (clamp(t/DURATION,0,1)*100).toFixed(2)+'%';
+}
+
+/* ============================================================================
+ * 4. PLAYBACK — autoplay+loop by default; ?debug scrub; ?clean for export.
+ *    Time is driven by performance.now() ONLY for live playback. Export and
+ *    scrubbing call seek(t) directly, bypassing the clock entirely.
+ * ========================================================================== */
+const params = new URLSearchParams(location.search);
+const DEBUG = params.has('debug');
+const CLEAN = params.has('clean');
+
+let playing = !CLEAN;
+let playhead = 0;             // current t (s)
+let clockBase = performance.now()/1000 - playhead;
+
+function seek(t){
+  playhead = ((t % DURATION) + DURATION) % DURATION;
+  render(playhead);
+  if(DEBUG){ scrub.value = Math.round(playhead/DURATION*1000);
+    clk.textContent = `${playhead.toFixed(2)} / ${DURATION.toFixed(2)}`; }
+}
+
+function loop(){
+  if(playing){
+    const now = performance.now()/1000;
+    seek(now - clockBase);           // live clock only feeds seek(); seek is pure
+  }
+  requestAnimationFrame(loop);
+}
+
+// fit scale
+function fit(){
+  const s = Math.min(innerWidth/1080, innerHeight/1920);
+  document.getElementById('stage').style.setProperty('--fit', s);
+}
+addEventListener('resize', fit); fit();
+
+// debug panel
+const panel=document.getElementById('panel'), pp=document.getElementById('pp'),
+      scrub=document.getElementById('scrub'), clk=document.getElementById('clk');
+if(DEBUG){
+  panel.classList.add('on');
+  pp.onclick=()=>{ playing=!playing; pp.textContent=playing?'❚❚':'►';
+    if(playing) clockBase=performance.now()/1000 - playhead; };
+  scrub.oninput=()=>{ playing=false; pp.textContent='►'; seek(scrub.value/1000*DURATION); };
+}
+addEventListener('keydown',e=>{
+  if(e.code==='Space'){ playing=!playing; if(playing) clockBase=performance.now()/1000-playhead; }
+  if(e.key==='r'||e.key==='R'){ playhead=0; clockBase=performance.now()/1000; seek(0); }
+});
+
+// expose for the export script (determinism entry point)
+window.VIDEO = {
+  seek: (t)=>seek(t),
+  DURATION,
+  ready: true,
+};
+
+render(0);          // draw first frame immediately (no first-frame flicker)
+loop();
+</script>
+</body>
+</html>
